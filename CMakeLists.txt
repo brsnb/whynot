@@ -9,7 +9,7 @@ add_compile_options(-W -Wall -DLOG_USE_COLOR)
 
 find_package(Vulkan REQUIRED)
 find_package(XCB REQUIRED)
-set(CMAKE_C_FLAGS "${CMAKE_CXX_FLAGS} -DVK_USE_PLATFORM_XCB_KHR")
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DVK_USE_PLATFORM_XCB_KHR")
 
 include_directories(external/stb)
 include_directories(external/log.c/src)
