@@ -54,3 +54,7 @@ dkms.conf
 # dirs
 build/
 .vscode/
+.cache/
+
+# misc
+compile_commands.json
