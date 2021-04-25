@@ -58,3 +58,4 @@ build/
 
 # misc
 compile_commands.json
+.clang-format
