@@ -35,57 +35,6 @@ typedef struct {
     VkQueueFlags supported;
 } wn_qfi_t;
 
-// TODO: Maybe??
-typedef struct {
-    VkImage image;
-    VkImageView image_view;
-
-    VkImage depth_image;
-    VkImageView depth_image_view;
-
-    VkFramebuffer framebuffer;
-} wn_frame_t;
-
-typedef struct {
-    VkInstance instance;
-
-    VkPhysicalDevice physical_device;
-    VkPhysicalDeviceProperties physical_device_props;  // maybe don't need
-    VkPhysicalDeviceFeatures physical_device_features; // maybe don't need
-
-    VkDevice logical_device;
-    wn_qfi_t qfi;
-    VkQueue grapics_queue;
-    VkQueue present_queue;
-
-    VkSurfaceKHR surface;
-    VkSwapchainKHR swapchain;
-    VkSurfaceFormatKHR surface_format;
-    VkExtent2D surface_extent;
-    uint32_t image_count;
-    VkImage *images;
-    VkImageView *image_views;
-    VkFramebuffer *framebuffers;
-
-    VkSemaphore *image_available;
-    VkSemaphore *render_finished;
-    VkFence *in_flight;
-    VkFence *image_in_flight;
-    size_t current_frame;
-
-    VkRenderPass render_pass;
-
-    VkPipelineLayout graphics_pipeline_layout;
-    VkPipeline graphics_pipeline;
-
-    VkCommandPool command_pool;
-    VkCommandBuffer *command_buffers;
-
-    // debug
-    VkDebugUtilsMessengerEXT debug_messenger;
-    bool debug_enabled;
-} wn_render_t;
-
 // TODO: Find other queues
 wn_qfi_t wn_find_queue_families(VkPhysicalDevice physical_device,
                                 VkSurfaceKHR surface) {
@@ -120,8 +69,329 @@ wn_qfi_t wn_find_queue_families(VkPhysicalDevice physical_device,
     return qfi;
 }
 
+typedef struct {
+    VkSurfaceKHR surface;
+
+    VkSurfaceCapabilitiesKHR capabilities;
+    uint32_t nformats;
+    VkSurfaceFormatKHR *supported_formats;
+    uint32_t npresent_modes;
+    VkPresentModeKHR *supported_present_modes;
+
+    VkSurfaceFormatKHR format;
+    VkPresentModeKHR present_mode;
+    VkExtent2D extent;
+} wn_surface_t;
+
+typedef struct {
+    VkImage image;
+    VkImageView image_view;
+    // VkImage depth_image;
+    // VkImageView depth_image_view;
+    VkFramebuffer framebuffer;
+    // VkCommandBuffer draw_buffer // TODO: maybe??
+} wn_frame_t;
+
+typedef struct {
+    VkSwapchainKHR swapchain;
+    VkSurfaceFormatKHR surface_format;
+    VkExtent2D surface_extent;
+    uint32_t nframes;
+    wn_frame_t *frames;
+} wn_swapchain_t;
+
+typedef struct {
+    VkInstance instance;
+
+    VkPhysicalDevice physical_device;
+    VkPhysicalDeviceProperties physical_device_props;  // maybe don't need
+    VkPhysicalDeviceFeatures physical_device_features; // maybe don't need
+
+    VkDevice logical_device;
+    wn_qfi_t qfi;
+    VkQueue grapics_queue;
+    VkQueue present_queue;
+
+    wn_surface_t surface;
+
+    wn_swapchain_t swapchain;
+
+    VkSemaphore *image_available;
+    VkSemaphore *render_finished;
+    VkFence *in_flight;
+    VkFence *image_in_flight;
+    size_t current_frame;
+
+    VkRenderPass render_pass;
+
+    VkPipelineLayout graphics_pipeline_layout;
+    VkPipeline graphics_pipeline;
+
+    VkCommandPool command_pool;
+    VkCommandBuffer *command_buffers;
+
+    // debug
+    VkDebugUtilsMessengerEXT debug_messenger;
+    bool debug_enabled;
+} wn_render_t;
+
+wn_surface_t wn_surface_new(VkInstance instance,
+                            VkPhysicalDevice physical_device,
+                            GLFWwindow *window) {
+    wn_surface_t surface = {0};
+
+    glfwCreateWindowSurface(instance, window, NULL, &surface.surface);
+
+    // capabilities
+    WN_VK_CHECK(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
+        physical_device, surface.surface, &surface.capabilities));
+
+    // formats
+    WN_VK_CHECK(vkGetPhysicalDeviceSurfaceFormatsKHR(
+        physical_device, surface.surface, &surface.nformats, NULL));
+    assert(surface.nformats > 0);
+
+    surface.supported_formats = (VkSurfaceFormatKHR *)malloc(
+        surface.nformats * sizeof(VkSurfaceFormatKHR));
+    assert(surface.supported_formats);
+
+    WN_VK_CHECK(vkGetPhysicalDeviceSurfaceFormatsKHR(
+        physical_device, surface.surface, &surface.nformats,
+        surface.supported_formats));
+
+    // present modes
+    WN_VK_CHECK(vkGetPhysicalDeviceSurfacePresentModesKHR(
+        physical_device, surface.surface, &surface.npresent_modes, NULL));
+    assert(surface.npresent_modes > 0);
+
+    surface.supported_present_modes = (VkPresentModeKHR *)malloc(
+        surface.npresent_modes * sizeof(VkPresentModeKHR));
+    assert(surface.supported_present_modes);
+
+    WN_VK_CHECK(vkGetPhysicalDeviceSurfacePresentModesKHR(
+        physical_device, surface.surface, &surface.npresent_modes,
+        surface.supported_present_modes));
+
+    /*
+     *  choose desired format/present mode/extent
+     */
+    surface.format = surface.supported_formats[0];
+    for (uint32_t i = 0; i < surface.nformats; i++) {
+        if (surface.supported_formats[i].format == VK_FORMAT_B8G8R8A8_SRGB &&
+            surface.supported_formats[i].colorSpace ==
+                VK_COLORSPACE_SRGB_NONLINEAR_KHR) {
+            surface.format = surface.supported_formats[i];
+        }
+    }
+
+    surface.present_mode = VK_PRESENT_MODE_FIFO_KHR;
+    for (uint32_t i = 0; i < surface.npresent_modes; i++) {
+        if (surface.supported_present_modes[i] == VK_PRESENT_MODE_MAILBOX_KHR) {
+            surface.present_mode = surface.supported_present_modes[i];
+        }
+    }
+
+    if (surface.capabilities.currentExtent.width != UINT32_MAX) {
+        surface.extent = surface.capabilities.currentExtent;
+    } else {
+        int width, height;
+        glfwGetFramebufferSize(window, &width, &height);
+
+        VkExtent2D surface_extent = {
+            width = (uint32_t)width,
+            height = (uint32_t)height,
+        };
+
+        surface.extent.width =
+            WN_MAX(surface.capabilities.maxImageExtent.width,
+                   WN_MIN(surface.capabilities.maxImageExtent.width,
+                          surface_extent.width));
+        surface.extent.height =
+            WN_MAX(surface.capabilities.maxImageExtent.height,
+                   WN_MIN(surface.capabilities.maxImageExtent.height,
+                          surface_extent.height));
+    }
+
+    return surface;
+}
+
+void wn_destroy_surface(VkInstance instance, wn_surface_t *surface) {
+    vkDestroySurfaceKHR(instance, surface->surface, NULL);
+    free(surface->supported_formats);
+    free(surface->supported_present_modes);
+}
+
+wn_swapchain_t wn_swapchain_new(VkPhysicalDevice physical_device,
+                                VkDevice logical_device, VkSurfaceKHR surface,
+                                VkRenderPass render_pass, GLFWwindow *window) {
+    wn_swapchain_t swapchain = {0};
+
+    // capabilities
+    VkSurfaceCapabilitiesKHR surface_caps;
+    WN_VK_CHECK(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
+        physical_device, surface, &surface_caps));
+
+    // formats
+    uint32_t format_count = 0;
+    WN_VK_CHECK(vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device, surface,
+                                                     &format_count, NULL));
+    assert(format_count > 0);
+
+    VkSurfaceFormatKHR surface_formats[format_count];
+    WN_VK_CHECK(vkGetPhysicalDeviceSurfaceFormatsKHR(
+        physical_device, surface, &format_count, surface_formats));
+
+    // present modes
+    uint32_t present_mode_count = 0;
+    WN_VK_CHECK(vkGetPhysicalDeviceSurfacePresentModesKHR(
+        physical_device, surface, &present_mode_count, NULL));
+    assert(present_mode_count > 0);
+
+    VkPresentModeKHR present_modes[present_mode_count];
+    WN_VK_CHECK(vkGetPhysicalDeviceSurfacePresentModesKHR(
+        physical_device, surface, &present_mode_count, present_modes));
+
+    /*
+     *  choose desired format/present mode/extent
+     */
+
+    swapchain.surface_format = surface_formats[0];
+    for (uint32_t i = 0; i < format_count; i++) {
+        if (surface_formats[i].format == VK_FORMAT_B8G8R8A8_SRGB &&
+            surface_formats[i].colorSpace == VK_COLORSPACE_SRGB_NONLINEAR_KHR) {
+            swapchain.surface_format = surface_formats[i];
+        }
+    }
+    VkPresentModeKHR present_mode = VK_PRESENT_MODE_FIFO_KHR;
+    for (uint32_t i = 0; i < present_mode_count; i++) {
+        if (present_modes[i] == VK_PRESENT_MODE_MAILBOX_KHR) {
+            present_mode = present_modes[i];
+        }
+    }
+
+    if (surface_caps.currentExtent.width != UINT32_MAX) {
+        swapchain.surface_extent = surface_caps.currentExtent;
+    } else {
+        int width, height;
+        glfwGetFramebufferSize(window, &width, &height);
+
+        VkExtent2D surface_extent = {
+            width = (uint32_t)width,
+            height = (uint32_t)height,
+        };
+
+        swapchain.surface_extent.width = WN_MAX(
+            surface_caps.maxImageExtent.width,
+            WN_MIN(surface_caps.maxImageExtent.width, surface_extent.width));
+        swapchain.surface_extent.height = WN_MAX(
+            surface_caps.maxImageExtent.height,
+            WN_MIN(surface_caps.maxImageExtent.height, surface_extent.height));
+    }
+
+    swapchain.nframes = surface_caps.minImageCount + 1;
+    if (surface_caps.maxImageCount > 0 &&
+        swapchain.nframes > surface_caps.maxImageCount) {
+        swapchain.nframes = surface_caps.maxImageCount;
+    }
+
+    /*
+     *  create swapchain
+     */
+
+    VkSwapchainCreateInfoKHR swapchain_info = {
+        .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
+        .surface = surface,
+        .minImageCount = swapchain.nframes,
+        .imageFormat = swapchain.surface_format.format,
+        .imageColorSpace = swapchain.surface_format.colorSpace,
+        .imageExtent = swapchain.surface_extent,
+        .imageArrayLayers = 1,
+        .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+        .imageSharingMode =
+            VK_SHARING_MODE_EXCLUSIVE, // FIXME: Only if graphics queue ==
+                                       // present queue
+        .preTransform = surface_caps.currentTransform,
+        .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+        .presentMode = present_mode,
+        .clipped = VK_TRUE,
+        .oldSwapchain = NULL,
+    };
+
+    WN_VK_CHECK(vkCreateSwapchainKHR(logical_device, &swapchain_info, NULL,
+                                     &swapchain.swapchain));
+
+    /*
+     *  swapchain images
+     */
+    WN_VK_CHECK(vkGetSwapchainImagesKHR(logical_device, swapchain.swapchain,
+                                        &swapchain.nframes, NULL));
+
+    VkImage *images = (VkImage *)malloc(swapchain.nframes * sizeof(VkImage));
+    assert(images);
+
+    WN_VK_CHECK(vkGetSwapchainImagesKHR(logical_device, swapchain.swapchain,
+                                        &swapchain.nframes, images));
+
+    swapchain.frames =
+        (wn_frame_t *)malloc(swapchain.nframes * sizeof(wn_frame_t));
+    assert(swapchain.frames);
+
+    for (uint32_t i = 0; i < swapchain.nframes; i++) {
+        swapchain.frames[i].image = images[i];
+
+        VkImageViewCreateInfo info = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .image = images[i],
+            .viewType = VK_IMAGE_VIEW_TYPE_2D,
+            .format = swapchain.surface_format.format,
+            .components =
+                {
+                    .r = VK_COMPONENT_SWIZZLE_IDENTITY,
+                    .g = VK_COMPONENT_SWIZZLE_IDENTITY,
+                    .b = VK_COMPONENT_SWIZZLE_IDENTITY,
+                    .a = VK_COMPONENT_SWIZZLE_IDENTITY,
+                },
+            .subresourceRange =
+                {
+                    .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                    .baseMipLevel = 0,
+                    .levelCount = 1,
+                    .baseArrayLayer = 0,
+                    .layerCount = 1,
+                },
+        };
+        WN_VK_CHECK(vkCreateImageView(logical_device, &info, NULL,
+                                      &swapchain.frames[i].image_view))
+
+        VkFramebufferCreateInfo framebuffer_info = {
+            .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+            .renderPass = render_pass,
+            .attachmentCount = 1,
+            .pAttachments = &swapchain.frames[i].image_view,
+            .width = swapchain.surface_extent.width,
+            .height = swapchain.surface_extent.height,
+            .layers = 1,
+        };
+
+        WN_VK_CHECK(vkCreateFramebuffer(logical_device, &framebuffer_info, NULL,
+                                        &swapchain.frames[i].framebuffer));
+    }
+
+    return swapchain;
+}
+
+// TODO: destroy depth image/view
+void wn_destroy_swapchain(VkDevice device, wn_swapchain_t *swapchain) {
+    for (uint32_t i = 0; i < swapchain->nframes; i++) {
+        vkDestroyImageView(device, swapchain->frames[i].image_view, NULL);
+        vkDestroyFramebuffer(device, swapchain->frames[i].framebuffer, NULL);
+    }
+    free(swapchain->frames);
+    vkDestroySwapchainKHR(device, swapchain->swapchain, NULL);
+}
+
 wn_render_t wn_render_init(GLFWwindow *window) {
-    wn_render_t render;
+    wn_render_t render = {0};
 
 #ifndef NDEBUG
     render.debug_enabled = true;
@@ -221,15 +491,18 @@ wn_render_t wn_render_init(GLFWwindow *window) {
     /*
      *    surface
      */
-    WN_VK_CHECK(glfwCreateWindowSurface(render.instance, window, NULL,
-                                        &render.surface));
+    render.surface =
+        wn_surface_new(render.instance, render.physical_device, window);
+
+    wn_surface_t *surface = &render.surface;
 
     /*
      *    logical device
      */
 
     // queue infos
-    render.qfi = wn_find_queue_families(render.physical_device, render.surface);
+    render.qfi =
+        wn_find_queue_families(render.physical_device, surface->surface);
     float queue_prios[] = {1.0f};
 
     // FIXME: fix when supporting seperate graphics/present queues
@@ -271,152 +544,10 @@ wn_render_t wn_render_init(GLFWwindow *window) {
                      &render.present_queue);
 
     /*
-     *    swapchain
-     */
-
-    // capabilities
-    VkSurfaceCapabilitiesKHR surface_caps;
-    WN_VK_CHECK(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
-        render.physical_device, render.surface, &surface_caps));
-
-    // formats
-    uint32_t format_count = 0;
-    WN_VK_CHECK(vkGetPhysicalDeviceSurfaceFormatsKHR(
-        render.physical_device, render.surface, &format_count, NULL));
-    assert(format_count > 0);
-
-    VkSurfaceFormatKHR surface_formats[format_count];
-    WN_VK_CHECK(vkGetPhysicalDeviceSurfaceFormatsKHR(
-        render.physical_device, render.surface, &format_count,
-        surface_formats));
-
-    // present modes
-    uint32_t present_mode_count = 0;
-    WN_VK_CHECK(vkGetPhysicalDeviceSurfacePresentModesKHR(
-        render.physical_device, render.surface, &present_mode_count, NULL));
-    assert(present_mode_count > 0);
-
-    VkPresentModeKHR present_modes[present_mode_count];
-    WN_VK_CHECK(vkGetPhysicalDeviceSurfacePresentModesKHR(
-        render.physical_device, render.surface, &present_mode_count,
-        present_modes));
-
-    /*
-     *  choose desired format/present mode/extent
-     */
-
-    render.surface_format = surface_formats[0];
-    for (uint32_t i = 0; i < format_count; i++) {
-        if (surface_formats[i].format == VK_FORMAT_B8G8R8A8_SRGB &&
-            surface_formats[i].colorSpace == VK_COLORSPACE_SRGB_NONLINEAR_KHR) {
-            render.surface_format = surface_formats[i];
-        }
-    }
-    VkPresentModeKHR present_mode = VK_PRESENT_MODE_FIFO_KHR;
-    for (uint32_t i = 0; i < present_mode_count; i++) {
-        if (present_modes[i] == VK_PRESENT_MODE_MAILBOX_KHR) {
-            present_mode = present_modes[i];
-        }
-    }
-
-    if (surface_caps.currentExtent.width != UINT32_MAX) {
-        render.surface_extent = surface_caps.currentExtent;
-    } else {
-        int width, height;
-        glfwGetFramebufferSize(window, &width, &height);
-
-        VkExtent2D surface_extent = {
-            width = (uint32_t)width,
-            height = (uint32_t)height,
-        };
-
-        render.surface_extent.width = WN_MAX(
-            surface_caps.maxImageExtent.width,
-            WN_MIN(surface_caps.maxImageExtent.width, surface_extent.width));
-        render.surface_extent.height = WN_MAX(
-            surface_caps.maxImageExtent.height,
-            WN_MIN(surface_caps.maxImageExtent.height, surface_extent.height));
-    }
-
-    render.image_count = surface_caps.minImageCount + 1;
-    if (surface_caps.maxImageCount > 0 &&
-        render.image_count > surface_caps.maxImageCount) {
-        render.image_count = surface_caps.maxImageCount;
-    }
-
-    /*
-     *  create swapchain
-     */
-
-    VkSwapchainCreateInfoKHR swapchain_info = {
-        .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
-        .surface = render.surface,
-        .minImageCount = render.image_count,
-        .imageFormat = render.surface_format.format,
-        .imageColorSpace = render.surface_format.colorSpace,
-        .imageExtent = render.surface_extent,
-        .imageArrayLayers = 1,
-        .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
-        .imageSharingMode =
-            VK_SHARING_MODE_EXCLUSIVE, // FIXME: Only if graphics queue ==
-                                       // present queue
-        .preTransform = surface_caps.currentTransform,
-        .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
-        .presentMode = present_mode,
-        .clipped = VK_TRUE,
-        .oldSwapchain = NULL,
-    };
-
-    WN_VK_CHECK(vkCreateSwapchainKHR(render.logical_device, &swapchain_info,
-                                     NULL, &render.swapchain));
-
-    /*
-     *  swapchain images
-     */
-    WN_VK_CHECK(vkGetSwapchainImagesKHR(render.logical_device, render.swapchain,
-                                        &render.image_count, NULL));
-
-    render.images = malloc(render.image_count * sizeof(VkImage));
-    assert(render.images);
-
-    WN_VK_CHECK(vkGetSwapchainImagesKHR(render.logical_device, render.swapchain,
-                                        &render.image_count, render.images));
-
-    render.image_views = malloc(render.image_count * sizeof(VkImageView));
-    assert(render.image_views);
-
-    for (uint32_t i = 0; i < render.image_count; i++) {
-        VkImageViewCreateInfo info = {
-            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-            .image = render.images[i],
-            .viewType = VK_IMAGE_VIEW_TYPE_2D,
-            .format = render.surface_format.format,
-            .components =
-                {
-                    .r = VK_COMPONENT_SWIZZLE_IDENTITY,
-                    .g = VK_COMPONENT_SWIZZLE_IDENTITY,
-                    .b = VK_COMPONENT_SWIZZLE_IDENTITY,
-                    .a = VK_COMPONENT_SWIZZLE_IDENTITY,
-                },
-            .subresourceRange =
-                {
-                    .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                    .baseMipLevel = 0,
-                    .levelCount = 1,
-                    .baseArrayLayer = 0,
-                    .layerCount = 1,
-                },
-        };
-
-        WN_VK_CHECK(vkCreateImageView(render.logical_device, &info, NULL,
-                                      &render.image_views[i]))
-    }
-
-    /*
      *  render pass
      */
     VkAttachmentDescription color_attachment = {
-        .format = render.surface_format.format,
+        .format = surface->format.format,
         .samples = VK_SAMPLE_COUNT_1_BIT,
         .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
         .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
@@ -458,6 +589,15 @@ wn_render_t wn_render_init(GLFWwindow *window) {
 
     WN_VK_CHECK(vkCreateRenderPass(render.logical_device, &render_pass_info,
                                    NULL, &render.render_pass));
+
+    /*
+     *    swapchain
+     */
+    render.swapchain =
+        wn_swapchain_new(render.physical_device, render.logical_device,
+                         surface->surface, render.render_pass, window);
+
+    wn_swapchain_t *swapchain = &render.swapchain;
 
     /*
      *  pipeline
@@ -527,14 +667,14 @@ wn_render_t wn_render_init(GLFWwindow *window) {
     VkViewport viewport = {
         .x = 0.0f,
         .y = 0.0f,
-        .width = (float)render.surface_extent.width,
-        .height = (float)render.surface_extent.height,
+        .width = (float)surface->extent.width,
+        .height = (float)surface->extent.height,
         .minDepth = 0.0f,
         .maxDepth = 1.0f,
     };
 
     VkRect2D scissor = {
-        .extent = render.surface_extent,
+        .extent = surface->extent,
         .offset = {.x = 0, .y = 0},
     };
 
@@ -630,31 +770,6 @@ wn_render_t wn_render_init(GLFWwindow *window) {
     vkDestroyShaderModule(render.logical_device, frag_sm, NULL);
 
     /*
-     *  framebuffer FIXME: BAD
-     */
-    render.framebuffers = malloc(sizeof(VkFramebuffer) * render.image_count);
-    if (!render.framebuffers) {
-        log_fatal("Couldn't create framebuffer");
-        exit(EXIT_FAILURE);
-    }
-
-    for (uint32_t i = 0; i < render.image_count; i++) {
-        VkFramebufferCreateInfo framebuffer_info = {
-            .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
-            .renderPass = render.render_pass,
-            .attachmentCount = 1,
-            .pAttachments = &render.image_views[i],
-            .width = render.surface_extent.width,
-            .height = render.surface_extent.height,
-            .layers = 1,
-        };
-
-        WN_VK_CHECK(vkCreateFramebuffer(render.logical_device,
-                                        &framebuffer_info, NULL,
-                                        &render.framebuffers[i]));
-    }
-
-    /*
      *  command pool
      */
     VkCommandPoolCreateInfo command_pool_info = {
@@ -667,22 +782,22 @@ wn_render_t wn_render_init(GLFWwindow *window) {
                                     NULL, &render.command_pool));
 
     /*
-     *  command buffers
+     *  command buffers // TODO: Pull out for per wn_frame_t draw buffer??
      */
     render.command_buffers =
-        malloc(sizeof(VkCommandBuffer) * render.image_count);
+        malloc(sizeof(VkCommandBuffer) * swapchain->nframes);
     assert(render.command_buffers);
 
     VkCommandBufferAllocateInfo command_buffer_info = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
         .commandPool = render.command_pool,
-        .commandBufferCount = render.image_count,
+        .commandBufferCount = swapchain->nframes,
         .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
     };
     WN_VK_CHECK(vkAllocateCommandBuffers(
         render.logical_device, &command_buffer_info, render.command_buffers));
 
-    for (uint32_t i = 0; i < render.image_count; i++) {
+    for (uint32_t i = 0; i < swapchain->nframes; i++) {
         VkCommandBufferBeginInfo command_buffer_begin_info = {
             .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
         };
@@ -693,11 +808,11 @@ wn_render_t wn_render_init(GLFWwindow *window) {
         VkRenderPassBeginInfo render_pass_begin_info = {
             .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
             .renderPass = render.render_pass,
-            .framebuffer = render.framebuffers[i],
+            .framebuffer = swapchain->frames[i].framebuffer,
             .renderArea =
                 {
                     .offset = {.x = 0, .y = 0},
-                    .extent = render.surface_extent,
+                    .extent = surface->extent,
                 },
             .clearValueCount = 1,
             .pClearValues = &(VkClearValue){{{0.0f, 0.0f, 0.0f, 1.0f}}},
@@ -728,19 +843,19 @@ wn_render_t wn_render_init(GLFWwindow *window) {
         .flags = VK_FENCE_CREATE_SIGNALED_BIT,
     };
 
-    render.image_available = malloc(sizeof(VkSemaphore) * MAX_FRAMES_IN_FLIGHT);
+    render.image_available = (VkSemaphore*)malloc(sizeof(VkSemaphore) * MAX_FRAMES_IN_FLIGHT);
     assert(render.image_available);
 
-    render.render_finished = malloc(sizeof(VkSemaphore) * MAX_FRAMES_IN_FLIGHT);
+    render.render_finished = (VkSemaphore*)malloc(sizeof(VkSemaphore) * MAX_FRAMES_IN_FLIGHT);
     assert(render.render_finished);
 
-    render.in_flight = malloc(sizeof(VkFence) * MAX_FRAMES_IN_FLIGHT);
+    render.in_flight = (VkFence*)malloc(sizeof(VkFence) * MAX_FRAMES_IN_FLIGHT);
     assert(render.in_flight);
 
-    render.image_in_flight = malloc(sizeof(VkFence) * render.image_count);
+    render.image_in_flight = (VkFence*)malloc(sizeof(VkFence) * swapchain->nframes);
     assert(render.image_in_flight);
 
-    for (uint32_t i = 0; i < render.image_count; i++) {
+    for (uint32_t i = 0; i < swapchain->nframes; i++) {
         render.image_in_flight[i] = NULL;
     }
 
@@ -764,7 +879,7 @@ void wn_draw(wn_render_t *render) {
                     UINT64_MAX);
 
     uint32_t image_index;
-    vkAcquireNextImageKHR(render->logical_device, render->swapchain, UINT64_MAX,
+    vkAcquireNextImageKHR(render->logical_device, render->swapchain.swapchain, UINT64_MAX,
                           render->image_available[render->current_frame], NULL,
                           &image_index);
 
@@ -801,7 +916,7 @@ void wn_draw(wn_render_t *render) {
         .waitSemaphoreCount = 1,
         .pWaitSemaphores = &render->render_finished[render->current_frame],
         .swapchainCount = 1,
-        .pSwapchains = &render->swapchain,
+        .pSwapchains = &render->swapchain.swapchain,
         .pImageIndices = &image_index,
         .pResults = NULL,
     };
@@ -825,12 +940,7 @@ void wn_destroy(wn_render_t *render) {
                 "Could not find PFN_vkDestroyDebugUtilsMessengerEXT adress");
         }
     }
-    for (uint32_t i = 0; i < render->image_count; i++) {
-        vkDestroyImageView(render->logical_device, render->image_views[i],
-                           NULL);
-        vkDestroyFramebuffer(render->logical_device, render->framebuffers[i],
-                             NULL);
-    }
+    wn_destroy_swapchain(render->logical_device, &render->swapchain);
     for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
         vkDestroySemaphore(render->logical_device, render->image_available[i],
                            NULL);
@@ -838,13 +948,11 @@ void wn_destroy(wn_render_t *render) {
                            NULL);
         vkDestroyFence(render->logical_device, render->in_flight[i], NULL);
     }
-
+    wn_destroy_surface(render->instance, &render->surface);
     vkDestroyPipeline(render->logical_device, render->graphics_pipeline, NULL);
     vkDestroyPipelineLayout(render->logical_device,
                             render->graphics_pipeline_layout, NULL);
     vkDestroyRenderPass(render->logical_device, render->render_pass, NULL);
-    vkDestroySwapchainKHR(render->logical_device, render->swapchain, NULL);
-    vkDestroySurfaceKHR(render->instance, render->surface, NULL);
     vkDestroyCommandPool(render->logical_device, render->command_pool, NULL);
     vkDestroyDevice(render->logical_device, NULL);
     vkDestroyInstance(render->instance, NULL);
