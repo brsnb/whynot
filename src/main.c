@@ -74,13 +74,15 @@ typedef struct {
 
     VkSurfaceCapabilitiesKHR capabilities;
     uint32_t nformats;
-    VkSurfaceFormatKHR *supported_formats;
+    VkSurfaceFormatKHR *formats;
     uint32_t npresent_modes;
-    VkPresentModeKHR *supported_present_modes;
+    VkPresentModeKHR *present_modes;
 
     VkSurfaceFormatKHR format;
     VkPresentModeKHR present_mode;
     VkExtent2D extent;
+
+    GLFWwindow *window;
 } wn_surface_t;
 
 typedef struct {
@@ -90,12 +92,11 @@ typedef struct {
     // VkImageView depth_image_view;
     VkFramebuffer framebuffer;
     // VkCommandBuffer draw_buffer // TODO: maybe??
+    // VkSemaphore image_available
 } wn_frame_t;
 
 typedef struct {
     VkSwapchainKHR swapchain;
-    VkSurfaceFormatKHR surface_format;
-    VkExtent2D surface_extent;
     uint32_t nframes;
     wn_frame_t *frames;
 } wn_swapchain_t;
@@ -135,12 +136,12 @@ typedef struct {
     bool debug_enabled;
 } wn_render_t;
 
-wn_surface_t wn_surface_new(VkInstance instance,
+wn_surface_t wn_surface_new(VkSurfaceKHR window_surface,
                             VkPhysicalDevice physical_device,
                             GLFWwindow *window) {
     wn_surface_t surface = {0};
 
-    glfwCreateWindowSurface(instance, window, NULL, &surface.surface);
+    surface.surface = window_surface;
 
     // capabilities
     WN_VK_CHECK(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
@@ -151,48 +152,48 @@ wn_surface_t wn_surface_new(VkInstance instance,
         physical_device, surface.surface, &surface.nformats, NULL));
     assert(surface.nformats > 0);
 
-    surface.supported_formats = (VkSurfaceFormatKHR *)malloc(
-        surface.nformats * sizeof(VkSurfaceFormatKHR));
-    assert(surface.supported_formats);
+    surface.formats = (VkSurfaceFormatKHR *)malloc(surface.nformats *
+                                                   sizeof(VkSurfaceFormatKHR));
+    assert(surface.formats);
 
     WN_VK_CHECK(vkGetPhysicalDeviceSurfaceFormatsKHR(
-        physical_device, surface.surface, &surface.nformats,
-        surface.supported_formats));
+        physical_device, surface.surface, &surface.nformats, surface.formats));
 
     // present modes
     WN_VK_CHECK(vkGetPhysicalDeviceSurfacePresentModesKHR(
         physical_device, surface.surface, &surface.npresent_modes, NULL));
     assert(surface.npresent_modes > 0);
 
-    surface.supported_present_modes = (VkPresentModeKHR *)malloc(
+    surface.present_modes = (VkPresentModeKHR *)malloc(
         surface.npresent_modes * sizeof(VkPresentModeKHR));
-    assert(surface.supported_present_modes);
+    assert(surface.present_modes);
 
     WN_VK_CHECK(vkGetPhysicalDeviceSurfacePresentModesKHR(
         physical_device, surface.surface, &surface.npresent_modes,
-        surface.supported_present_modes));
+        surface.present_modes));
 
     /*
      *  choose desired format/present mode/extent
      */
-    surface.format = surface.supported_formats[0];
+    surface.format = surface.formats[0];
     for (uint32_t i = 0; i < surface.nformats; i++) {
-        if (surface.supported_formats[i].format == VK_FORMAT_B8G8R8A8_SRGB &&
-            surface.supported_formats[i].colorSpace ==
-                VK_COLORSPACE_SRGB_NONLINEAR_KHR) {
-            surface.format = surface.supported_formats[i];
+        if (surface.formats[i].format == VK_FORMAT_B8G8R8A8_SRGB &&
+            surface.formats[i].colorSpace == VK_COLORSPACE_SRGB_NONLINEAR_KHR) {
+            surface.format = surface.formats[i];
         }
     }
 
     surface.present_mode = VK_PRESENT_MODE_FIFO_KHR;
     for (uint32_t i = 0; i < surface.npresent_modes; i++) {
-        if (surface.supported_present_modes[i] == VK_PRESENT_MODE_MAILBOX_KHR) {
-            surface.present_mode = surface.supported_present_modes[i];
+        if (surface.present_modes[i] == VK_PRESENT_MODE_MAILBOX_KHR) {
+            surface.present_mode = surface.present_modes[i];
         }
     }
 
-    if (surface.capabilities.currentExtent.width != UINT32_MAX) {
-        surface.extent = surface.capabilities.currentExtent;
+    VkSurfaceCapabilitiesKHR surface_caps = surface.capabilities;
+
+    if (surface_caps.currentExtent.width != UINT32_MAX) {
+        surface.extent = surface_caps.currentExtent;
     } else {
         int width, height;
         glfwGetFramebufferSize(window, &width, &height);
@@ -202,91 +203,30 @@ wn_surface_t wn_surface_new(VkInstance instance,
             height = (uint32_t)height,
         };
 
-        surface.extent.width =
-            WN_MAX(surface.capabilities.maxImageExtent.width,
-                   WN_MIN(surface.capabilities.maxImageExtent.width,
-                          surface_extent.width));
-        surface.extent.height =
-            WN_MAX(surface.capabilities.maxImageExtent.height,
-                   WN_MIN(surface.capabilities.maxImageExtent.height,
-                          surface_extent.height));
+        surface.extent.width = WN_MAX(
+            surface_caps.maxImageExtent.width,
+            WN_MIN(surface_caps.maxImageExtent.width, surface_extent.width));
+        surface.extent.height = WN_MAX(
+            surface_caps.maxImageExtent.height,
+            WN_MIN(surface_caps.maxImageExtent.height, surface_extent.height));
     }
+
+    surface.window = window;
 
     return surface;
 }
 
-void wn_destroy_surface(VkInstance instance, wn_surface_t *surface) {
-    vkDestroySurfaceKHR(instance, surface->surface, NULL);
-    free(surface->supported_formats);
-    free(surface->supported_present_modes);
+void wn_destroy_surface(wn_surface_t *surface) {
+    free(surface->formats);
+    free(surface->present_modes);
 }
 
-wn_swapchain_t wn_swapchain_new(VkPhysicalDevice physical_device,
-                                VkDevice logical_device, VkSurfaceKHR surface,
-                                VkRenderPass render_pass, GLFWwindow *window) {
+// TODO: maybe decouple from glfw and just pass desired width/height
+wn_swapchain_t wn_swapchain_new(VkDevice logical_device, wn_surface_t *surface,
+                                VkRenderPass render_pass) {
     wn_swapchain_t swapchain = {0};
 
-    // capabilities
-    VkSurfaceCapabilitiesKHR surface_caps;
-    WN_VK_CHECK(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
-        physical_device, surface, &surface_caps));
-
-    // formats
-    uint32_t format_count = 0;
-    WN_VK_CHECK(vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device, surface,
-                                                     &format_count, NULL));
-    assert(format_count > 0);
-
-    VkSurfaceFormatKHR surface_formats[format_count];
-    WN_VK_CHECK(vkGetPhysicalDeviceSurfaceFormatsKHR(
-        physical_device, surface, &format_count, surface_formats));
-
-    // present modes
-    uint32_t present_mode_count = 0;
-    WN_VK_CHECK(vkGetPhysicalDeviceSurfacePresentModesKHR(
-        physical_device, surface, &present_mode_count, NULL));
-    assert(present_mode_count > 0);
-
-    VkPresentModeKHR present_modes[present_mode_count];
-    WN_VK_CHECK(vkGetPhysicalDeviceSurfacePresentModesKHR(
-        physical_device, surface, &present_mode_count, present_modes));
-
-    /*
-     *  choose desired format/present mode/extent
-     */
-
-    swapchain.surface_format = surface_formats[0];
-    for (uint32_t i = 0; i < format_count; i++) {
-        if (surface_formats[i].format == VK_FORMAT_B8G8R8A8_SRGB &&
-            surface_formats[i].colorSpace == VK_COLORSPACE_SRGB_NONLINEAR_KHR) {
-            swapchain.surface_format = surface_formats[i];
-        }
-    }
-    VkPresentModeKHR present_mode = VK_PRESENT_MODE_FIFO_KHR;
-    for (uint32_t i = 0; i < present_mode_count; i++) {
-        if (present_modes[i] == VK_PRESENT_MODE_MAILBOX_KHR) {
-            present_mode = present_modes[i];
-        }
-    }
-
-    if (surface_caps.currentExtent.width != UINT32_MAX) {
-        swapchain.surface_extent = surface_caps.currentExtent;
-    } else {
-        int width, height;
-        glfwGetFramebufferSize(window, &width, &height);
-
-        VkExtent2D surface_extent = {
-            width = (uint32_t)width,
-            height = (uint32_t)height,
-        };
-
-        swapchain.surface_extent.width = WN_MAX(
-            surface_caps.maxImageExtent.width,
-            WN_MIN(surface_caps.maxImageExtent.width, surface_extent.width));
-        swapchain.surface_extent.height = WN_MAX(
-            surface_caps.maxImageExtent.height,
-            WN_MIN(surface_caps.maxImageExtent.height, surface_extent.height));
-    }
+    VkSurfaceCapabilitiesKHR surface_caps = surface->capabilities;
 
     swapchain.nframes = surface_caps.minImageCount + 1;
     if (surface_caps.maxImageCount > 0 &&
@@ -300,11 +240,11 @@ wn_swapchain_t wn_swapchain_new(VkPhysicalDevice physical_device,
 
     VkSwapchainCreateInfoKHR swapchain_info = {
         .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
-        .surface = surface,
+        .surface = surface->surface,
         .minImageCount = swapchain.nframes,
-        .imageFormat = swapchain.surface_format.format,
-        .imageColorSpace = swapchain.surface_format.colorSpace,
-        .imageExtent = swapchain.surface_extent,
+        .imageFormat = surface->format.format,
+        .imageColorSpace = surface->format.colorSpace,
+        .imageExtent = surface->extent,
         .imageArrayLayers = 1,
         .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
         .imageSharingMode =
@@ -312,7 +252,7 @@ wn_swapchain_t wn_swapchain_new(VkPhysicalDevice physical_device,
                                        // present queue
         .preTransform = surface_caps.currentTransform,
         .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
-        .presentMode = present_mode,
+        .presentMode = surface->present_mode,
         .clipped = VK_TRUE,
         .oldSwapchain = NULL,
     };
@@ -343,7 +283,7 @@ wn_swapchain_t wn_swapchain_new(VkPhysicalDevice physical_device,
             .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
             .image = images[i],
             .viewType = VK_IMAGE_VIEW_TYPE_2D,
-            .format = swapchain.surface_format.format,
+            .format = surface->format.format,
             .components =
                 {
                     .r = VK_COMPONENT_SWIZZLE_IDENTITY,
@@ -368,8 +308,8 @@ wn_swapchain_t wn_swapchain_new(VkPhysicalDevice physical_device,
             .renderPass = render_pass,
             .attachmentCount = 1,
             .pAttachments = &swapchain.frames[i].image_view,
-            .width = swapchain.surface_extent.width,
-            .height = swapchain.surface_extent.height,
+            .width = surface->extent.width,
+            .height = surface->extent.height,
             .layers = 1,
         };
 
@@ -491,8 +431,11 @@ wn_render_t wn_render_init(GLFWwindow *window) {
     /*
      *    surface
      */
+    VkSurfaceKHR window_surface = NULL;
+    WN_VK_CHECK(glfwCreateWindowSurface(render.instance, window, NULL,
+                                        &window_surface));
     render.surface =
-        wn_surface_new(render.instance, render.physical_device, window);
+        wn_surface_new(window_surface, render.physical_device, window);
 
     wn_surface_t *surface = &render.surface;
 
@@ -594,8 +537,7 @@ wn_render_t wn_render_init(GLFWwindow *window) {
      *    swapchain
      */
     render.swapchain =
-        wn_swapchain_new(render.physical_device, render.logical_device,
-                         surface->surface, render.render_pass, window);
+        wn_swapchain_new(render.logical_device, surface, render.render_pass);
 
     wn_swapchain_t *swapchain = &render.swapchain;
 
@@ -843,16 +785,20 @@ wn_render_t wn_render_init(GLFWwindow *window) {
         .flags = VK_FENCE_CREATE_SIGNALED_BIT,
     };
 
-    render.image_available = (VkSemaphore*)malloc(sizeof(VkSemaphore) * MAX_FRAMES_IN_FLIGHT);
+    render.image_available =
+        (VkSemaphore *)malloc(sizeof(VkSemaphore) * MAX_FRAMES_IN_FLIGHT);
     assert(render.image_available);
 
-    render.render_finished = (VkSemaphore*)malloc(sizeof(VkSemaphore) * MAX_FRAMES_IN_FLIGHT);
+    render.render_finished =
+        (VkSemaphore *)malloc(sizeof(VkSemaphore) * MAX_FRAMES_IN_FLIGHT);
     assert(render.render_finished);
 
-    render.in_flight = (VkFence*)malloc(sizeof(VkFence) * MAX_FRAMES_IN_FLIGHT);
+    render.in_flight =
+        (VkFence *)malloc(sizeof(VkFence) * MAX_FRAMES_IN_FLIGHT);
     assert(render.in_flight);
 
-    render.image_in_flight = (VkFence*)malloc(sizeof(VkFence) * swapchain->nframes);
+    render.image_in_flight =
+        (VkFence *)malloc(sizeof(VkFence) * swapchain->nframes);
     assert(render.image_in_flight);
 
     for (uint32_t i = 0; i < swapchain->nframes; i++) {
@@ -873,15 +819,135 @@ wn_render_t wn_render_init(GLFWwindow *window) {
     return render;
 }
 
-void wn_draw(wn_render_t *render) {
+void wn_recreate_swapchain(wn_render_t *render, GLFWwindow *window) {
+    /*
+     *    destroy existing swapchain and dependencies
+     */
+    vkDeviceWaitIdle(render->logical_device);
+    wn_destroy_swapchain(render->logical_device, &render->swapchain);
+    vkFreeCommandBuffers(render->logical_device, render->command_pool,
+                         render->swapchain.nframes, render->command_buffers);
+    vkDestroyRenderPass(render->logical_device, render->render_pass, NULL);
+
+    free(render->surface.formats);
+    free(render->surface.present_modes);
+
+    /*
+     *    start anew...
+     */
+    render->surface = wn_surface_new(render->surface.surface,
+                                     render->physical_device, window);
+
+    VkAttachmentDescription color_attachment = {
+        .format = render->surface.format.format,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+        .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+    };
+
+    VkAttachmentReference color_attachment_ref = {
+        .attachment = 0,
+        .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+    };
+
+    VkSubpassDescription subpass_desc = {
+        .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
+        .colorAttachmentCount = 1,
+        .pColorAttachments = &color_attachment_ref,
+    };
+
+    VkSubpassDependency subpass_dependency = {
+        .srcSubpass = VK_SUBPASS_EXTERNAL,
+        .dstSubpass = 0,
+        .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .srcAccessMask = 0,
+        .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+    };
+
+    VkRenderPassCreateInfo render_pass_info = {
+        .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+        .attachmentCount = 1,
+        .pAttachments = &color_attachment,
+        .subpassCount = 1,
+        .pSubpasses = &subpass_desc,
+        .dependencyCount = 1,
+        .pDependencies = &subpass_dependency,
+    };
+
+    WN_VK_CHECK(vkCreateRenderPass(render->logical_device, &render_pass_info,
+                                   NULL, &render->render_pass));
+
+    render->swapchain = wn_swapchain_new(render->logical_device,
+                                         &render->surface, render->render_pass);
+
+    VkCommandBufferAllocateInfo command_buffer_info = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool = render->command_pool,
+        .commandBufferCount = render->swapchain.nframes,
+        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+    };
+    WN_VK_CHECK(vkAllocateCommandBuffers(
+        render->logical_device, &command_buffer_info, render->command_buffers));
+
+    for (uint32_t i = 0; i < render->swapchain.nframes; i++) {
+        VkCommandBufferBeginInfo command_buffer_begin_info = {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        };
+
+        WN_VK_CHECK(vkBeginCommandBuffer(render->command_buffers[i],
+                                         &command_buffer_begin_info));
+
+        VkRenderPassBeginInfo render_pass_begin_info = {
+            .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+            .renderPass = render->render_pass,
+            .framebuffer = render->swapchain.frames[i].framebuffer,
+            .renderArea =
+                {
+                    .offset = {.x = 0, .y = 0},
+                    .extent = render->surface.extent,
+                },
+            .clearValueCount = 1,
+            .pClearValues = &(VkClearValue){{{0.0f, 0.0f, 0.0f, 1.0f}}},
+        };
+
+        vkCmdBeginRenderPass(render->command_buffers[i],
+                             &render_pass_begin_info,
+                             VK_SUBPASS_CONTENTS_INLINE);
+
+        vkCmdBindPipeline(render->command_buffers[i],
+                          VK_PIPELINE_BIND_POINT_GRAPHICS,
+                          render->graphics_pipeline);
+
+        vkCmdDraw(render->command_buffers[i], 3, 1, 0, 0);
+
+        vkCmdEndRenderPass(render->command_buffers[i]);
+
+        WN_VK_CHECK(vkEndCommandBuffer(render->command_buffers[i]));
+    }
+}
+
+void wn_draw(wn_render_t *render, GLFWwindow *window) {
     vkWaitForFences(render->logical_device, 1,
                     &render->in_flight[render->current_frame], VK_TRUE,
                     UINT64_MAX);
 
     uint32_t image_index;
-    vkAcquireNextImageKHR(render->logical_device, render->swapchain.swapchain, UINT64_MAX,
-                          render->image_available[render->current_frame], NULL,
-                          &image_index);
+    VkResult result = vkAcquireNextImageKHR(
+        render->logical_device, render->swapchain.swapchain, UINT64_MAX,
+        render->image_available[render->current_frame], NULL, &image_index);
+
+    if (result == VK_ERROR_OUT_OF_DATE_KHR) {
+        wn_recreate_swapchain(render, window);
+        return;
+    } else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
+        log_fatal("Could not acquire swapchain image");
+        exit(EXIT_FAILURE);
+    }
 
     if (render->image_in_flight[image_index] != NULL) {
         vkWaitForFences(render->logical_device, 1,
@@ -921,7 +987,14 @@ void wn_draw(wn_render_t *render) {
         .pResults = NULL,
     };
 
-    vkQueuePresentKHR(render->present_queue, &present_info);
+    result = vkQueuePresentKHR(render->present_queue, &present_info);
+
+    if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
+        wn_recreate_swapchain(render, window);
+    } else if (result != VK_SUCCESS) {
+        log_fatal("Could not acquire swapchain image");
+        exit(EXIT_FAILURE);
+    }
 
     render->current_frame = (render->current_frame + 1) % MAX_FRAMES_IN_FLIGHT;
 }
@@ -948,7 +1021,11 @@ void wn_destroy(wn_render_t *render) {
                            NULL);
         vkDestroyFence(render->logical_device, render->in_flight[i], NULL);
     }
-    wn_destroy_surface(render->instance, &render->surface);
+
+    // FIXME
+    wn_destroy_surface(&render->surface);
+    vkDestroySurfaceKHR(render->instance, render->surface.surface, NULL);
+
     vkDestroyPipeline(render->logical_device, render->graphics_pipeline, NULL);
     vkDestroyPipelineLayout(render->logical_device,
                             render->graphics_pipeline_layout, NULL);
@@ -974,7 +1051,7 @@ int main(void) {
 
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
-        wn_draw(&render);
+        wn_draw(&render, window);
     }
 
     vkDeviceWaitIdle(render.logical_device);
