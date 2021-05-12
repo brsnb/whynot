@@ -27,6 +27,59 @@ whynot: main.c
 
 #define MAX_FRAMES_IN_FLIGHT 2
 
+// try and wrap GLFW dependency...
+typedef struct {
+    GLFWwindow *window;
+} wn_window_t;
+
+wn_window_t wn_window_new(int width, int height, char *title) {
+    if (!glfwInit()) {
+        log_fatal("Could not initialize GLFW");
+        exit(EXIT_FAILURE);
+    }
+
+    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+    GLFWwindow *os_window = glfwCreateWindow(width, height, title, NULL, NULL);
+
+    if (!os_window) {
+        log_fatal("Could not create OS window");
+        exit(EXIT_FAILURE);
+    }
+
+    wn_window_t window = {
+        .window = os_window,
+    };
+
+    return window;
+}
+
+void wn_window_destroy(wn_window_t *window) {
+    glfwDestroyWindow(window->window);
+    glfwTerminate();
+}
+
+void wn_window_get_framebuffer_size(wn_window_t *window, int *width,
+                                    int *height) {
+    glfwGetFramebufferSize(window->window, width, height);
+}
+
+// in the style of..., but exits on failure
+void wn_window_create_surface(VkInstance instance, wn_window_t *window,
+                              VkSurfaceKHR *surface) {
+    WN_VK_CHECK(
+        glfwCreateWindowSurface(instance, window->window, NULL, surface));
+}
+
+int wn_window_should_close(wn_window_t *window) {
+    return glfwWindowShouldClose(window->window);
+}
+
+void wn_window_poll_events(void) { glfwPollEvents(); }
+
+const char **wn_window_get_required_exts(uint32_t *nexts) {
+    return glfwGetRequiredInstanceExtensions(nexts);
+}
+
 typedef struct {
     uint32_t compute;
     uint32_t graphics;
@@ -81,8 +134,6 @@ typedef struct {
     VkSurfaceFormatKHR format;
     VkPresentModeKHR present_mode;
     VkExtent2D extent;
-
-    GLFWwindow *window;
 } wn_surface_t;
 
 typedef struct {
@@ -138,7 +189,7 @@ typedef struct {
 
 wn_surface_t wn_surface_new(VkSurfaceKHR window_surface,
                             VkPhysicalDevice physical_device,
-                            GLFWwindow *window) {
+                            wn_window_t *window) {
     wn_surface_t surface = {0};
 
     surface.surface = window_surface;
@@ -196,7 +247,7 @@ wn_surface_t wn_surface_new(VkSurfaceKHR window_surface,
         surface.extent = surface_caps.currentExtent;
     } else {
         int width, height;
-        glfwGetFramebufferSize(window, &width, &height);
+        wn_window_get_framebuffer_size(window, &width, &height);
 
         VkExtent2D surface_extent = {
             width = (uint32_t)width,
@@ -211,12 +262,10 @@ wn_surface_t wn_surface_new(VkSurfaceKHR window_surface,
             WN_MIN(surface_caps.maxImageExtent.height, surface_extent.height));
     }
 
-    surface.window = window;
-
     return surface;
 }
 
-void wn_destroy_surface(wn_surface_t *surface) {
+void wn_surface_destroy(wn_surface_t *surface) {
     free(surface->formats);
     free(surface->present_modes);
 }
@@ -321,7 +370,7 @@ wn_swapchain_t wn_swapchain_new(VkDevice logical_device, wn_surface_t *surface,
 }
 
 // TODO: destroy depth image/view
-void wn_destroy_swapchain(VkDevice device, wn_swapchain_t *swapchain) {
+void wn_swapchain_destroy(VkDevice device, wn_swapchain_t *swapchain) {
     for (uint32_t i = 0; i < swapchain->nframes; i++) {
         vkDestroyImageView(device, swapchain->frames[i].image_view, NULL);
         vkDestroyFramebuffer(device, swapchain->frames[i].framebuffer, NULL);
@@ -330,7 +379,7 @@ void wn_destroy_swapchain(VkDevice device, wn_swapchain_t *swapchain) {
     vkDestroySwapchainKHR(device, swapchain->swapchain, NULL);
 }
 
-wn_render_t wn_render_init(GLFWwindow *window) {
+wn_render_t wn_render_init(wn_window_t *window) {
     wn_render_t render = {0};
 
 #ifndef NDEBUG
@@ -346,7 +395,7 @@ wn_render_t wn_render_init(GLFWwindow *window) {
     };
 
     uint32_t ext_count = 0;
-    const char **glfw_exts = glfwGetRequiredInstanceExtensions(&ext_count);
+    const char **glfw_exts = wn_window_get_required_exts(&ext_count);
     const char **exts = NULL;
 
     for (uint32_t i = 0; i < ext_count; i++) {
@@ -432,8 +481,8 @@ wn_render_t wn_render_init(GLFWwindow *window) {
      *    surface
      */
     VkSurfaceKHR window_surface = NULL;
-    WN_VK_CHECK(glfwCreateWindowSurface(render.instance, window, NULL,
-                                        &window_surface));
+    wn_window_create_surface(render.instance, window, &window_surface);
+
     render.surface =
         wn_surface_new(window_surface, render.physical_device, window);
 
@@ -819,12 +868,12 @@ wn_render_t wn_render_init(GLFWwindow *window) {
     return render;
 }
 
-void wn_recreate_swapchain(wn_render_t *render, GLFWwindow *window) {
+void wn_swapchain_recreate(wn_render_t *render, wn_window_t *window) {
     /*
      *    destroy existing swapchain and dependencies
      */
     vkDeviceWaitIdle(render->logical_device);
-    wn_destroy_swapchain(render->logical_device, &render->swapchain);
+    wn_swapchain_destroy(render->logical_device, &render->swapchain);
     vkFreeCommandBuffers(render->logical_device, render->command_pool,
                          render->swapchain.nframes, render->command_buffers);
     vkDestroyRenderPass(render->logical_device, render->render_pass, NULL);
@@ -931,7 +980,7 @@ void wn_recreate_swapchain(wn_render_t *render, GLFWwindow *window) {
     }
 }
 
-void wn_draw(wn_render_t *render, GLFWwindow *window) {
+void wn_draw(wn_render_t *render, wn_window_t *window) {
     vkWaitForFences(render->logical_device, 1,
                     &render->in_flight[render->current_frame], VK_TRUE,
                     UINT64_MAX);
@@ -942,7 +991,7 @@ void wn_draw(wn_render_t *render, GLFWwindow *window) {
         render->image_available[render->current_frame], NULL, &image_index);
 
     if (result == VK_ERROR_OUT_OF_DATE_KHR) {
-        wn_recreate_swapchain(render, window);
+        wn_swapchain_recreate(render, window);
         return;
     } else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
         log_fatal("Could not acquire swapchain image");
@@ -990,7 +1039,7 @@ void wn_draw(wn_render_t *render, GLFWwindow *window) {
     result = vkQueuePresentKHR(render->present_queue, &present_info);
 
     if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
-        wn_recreate_swapchain(render, window);
+        wn_swapchain_recreate(render, window);
     } else if (result != VK_SUCCESS) {
         log_fatal("Could not acquire swapchain image");
         exit(EXIT_FAILURE);
@@ -1013,7 +1062,7 @@ void wn_destroy(wn_render_t *render) {
                 "Could not find PFN_vkDestroyDebugUtilsMessengerEXT adress");
         }
     }
-    wn_destroy_swapchain(render->logical_device, &render->swapchain);
+    wn_swapchain_destroy(render->logical_device, &render->swapchain);
     for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
         vkDestroySemaphore(render->logical_device, render->image_available[i],
                            NULL);
@@ -1023,7 +1072,7 @@ void wn_destroy(wn_render_t *render) {
     }
 
     // FIXME
-    wn_destroy_surface(&render->surface);
+    wn_surface_destroy(&render->surface);
     vkDestroySurfaceKHR(render->instance, render->surface.surface, NULL);
 
     vkDestroyPipeline(render->logical_device, render->graphics_pipeline, NULL);
@@ -1042,24 +1091,20 @@ int main(void) {
     log_set_level(LOG_ERROR);
 #endif
 
-    glfwInit();
+    wn_window_t window = wn_window_new(640, 480, "whynot");
 
-    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    GLFWwindow *window = glfwCreateWindow(640, 480, "whynot", NULL, NULL);
+    wn_render_t render = wn_render_init(&window);
 
-    wn_render_t render = wn_render_init(window);
-
-    while (!glfwWindowShouldClose(window)) {
-        glfwPollEvents();
-        wn_draw(&render, window);
+    while (!wn_window_should_close(&window)) {
+        wn_window_poll_events();
+        wn_draw(&render, &window);
     }
 
     vkDeviceWaitIdle(render.logical_device);
 
     wn_destroy(&render);
 
-    glfwDestroyWindow(window);
-    glfwTerminate();
+    wn_window_destroy(&window);
 
     return 0;
 }
