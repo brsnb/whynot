@@ -714,15 +714,12 @@ wn_render_t wn_render_init(wn_window_t *window) {
     };
 
     // TODO: dynamic state
-    /*
     VkPipelineDynamicStateCreateInfo dynamic_state_info = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
         .dynamicStateCount = 2,
-        // FIXME: remove anan struct
         .pDynamicStates = (VkDynamicState[]){VK_DYNAMIC_STATE_VIEWPORT,
                                              VK_DYNAMIC_STATE_SCISSOR},
     };
-    */
 
     // pipeline layout
     VkPipelineLayoutCreateInfo pipeline_layout_info = {
@@ -745,7 +742,7 @@ wn_render_t wn_render_init(wn_window_t *window) {
         .pMultisampleState = &multisample_state_info,
         .pDepthStencilState = NULL,
         .pColorBlendState = &color_blend_state_info,
-        .pDynamicState = NULL,
+        .pDynamicState = &dynamic_state_info,
         .layout = render.graphics_pipeline_layout,
         .renderPass = render.render_pass,
         .subpass = 0,
@@ -815,6 +812,9 @@ wn_render_t wn_render_init(wn_window_t *window) {
         vkCmdBindPipeline(render.command_buffers[i],
                           VK_PIPELINE_BIND_POINT_GRAPHICS,
                           render.graphics_pipeline);
+
+        vkCmdSetViewport(render.command_buffers[i], 0, 1, &viewport);
+        vkCmdSetScissor(render.command_buffers[i], 0, 1, &scissor);
 
         vkCmdDraw(render.command_buffers[i], 3, 1, 0, 0);
 
@@ -971,6 +971,24 @@ void wn_swapchain_recreate(wn_render_t *render, wn_window_t *window) {
         vkCmdBindPipeline(render->command_buffers[i],
                           VK_PIPELINE_BIND_POINT_GRAPHICS,
                           render->graphics_pipeline);
+
+        // dynamic states
+        VkViewport viewport = {
+            .x = 0.0f,
+            .y = 0.0f,
+            .width = (float)render->surface.extent.width,
+            .height = (float)render->surface.extent.height,
+            .minDepth = 0.0f,
+            .maxDepth = 1.0f,
+        };
+
+        VkRect2D scissor = {
+            .extent = render->surface.extent,
+            .offset = {.x = 0, .y = 0},
+        };
+
+        vkCmdSetViewport(render->command_buffers[i], 0, 1, &viewport);
+        vkCmdSetScissor(render->command_buffers[i], 0, 1, &scissor);
 
         vkCmdDraw(render->command_buffers[i], 3, 1, 0, 0);
 
