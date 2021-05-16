@@ -5,7 +5,7 @@ set(NAME whynot)
 
 project(${NAME})
 
-add_compile_options(-W -Wall -DLOG_USE_COLOR -lstdc++)
+add_compile_options(-W -Wall -fdiagnostics-color=always -DLOG_USE_COLOR -lstdc++)
 
 find_package(Vulkan REQUIRED)
 find_package(glfw3 REQUIRED)
@@ -22,5 +22,5 @@ add_executable(${NAME}
     src/util.h
     src/main.c)
 
-target_compile_features(${NAME} PUBLIC c_std_99)
+target_compile_features(${NAME} PUBLIC c_std_11)
 target_link_libraries(${NAME} PRIVATE stdc++ SPIRV glslang shaderc_combined vulkan glfw)

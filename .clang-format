@@ -1,0 +1,15 @@
+BasedOnStyle: WebKit
+IndentWidth: 4
+
+AlignAfterOpenBracket: AlwaysBreak
+AllowAllArgumentsOnNextLine: false
+AllowAllParametersOfDeclarationOnNextLine: false
+BinPackArguments: false
+BinPackParameters: false
+BreakBeforeBraces: Allman
+ColumnLimit: 100
+PointerAlignment: Right
+IndentPPDirectives: BeforeHash
+
+PenaltyBreakBeforeFirstCallParameter: 0
+PenaltyReturnTypeOnItsOwnLine: 1000

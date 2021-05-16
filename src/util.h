@@ -17,68 +17,94 @@ whynot: util.h
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan_core.h>
 
-#define WN_VK_CHECK(f)                                                         \
-    {                                                                          \
-        VkResult res = (f);                                                    \
-        if (res != VK_SUCCESS) {                                               \
-            log_fatal("VkResult is \"%s\" in %s at line %d\n",                 \
-                      wn_vk_result_to_string(res), __FILE__, __LINE__);        \
-            assert(res);                                                       \
-        }                                                                      \
+#define WN_VK_CHECK(f)                                                                             \
+    {                                                                                              \
+        VkResult res = (f);                                                                        \
+        if (res != VK_SUCCESS)                                                                     \
+        {                                                                                          \
+            log_fatal(                                                                             \
+                "VkResult is \"%s\" in %s at line %d\n",                                           \
+                wn_vk_result_to_string(res),                                                       \
+                __FILE__,                                                                          \
+                __LINE__);                                                                         \
+            assert(res);                                                                           \
+        }                                                                                          \
     }
 
-#define WN_MAX(a, b)                                                           \
-    ({                                                                         \
-        __typeof__(a) _a = (a);                                                \
-        __typeof__(b) _b = (b);                                                \
-        _a > _b ? _a : _b;                                                     \
+#define WN_MAX(a, b)                                                                               \
+    ({                                                                                             \
+        __typeof__(a) _a = (a);                                                                    \
+        __typeof__(b) _b = (b);                                                                    \
+        _a > _b ? _a : _b;                                                                         \
     })
 
-#define WN_MIN(a, b)                                                           \
-    ({                                                                         \
-        __typeof__(a) _a = (a);                                                \
-        __typeof__(b) _b = (b);                                                \
-        _a < _b ? _a : _b;                                                     \
+#define WN_MIN(a, b)                                                                               \
+    ({                                                                                             \
+        __typeof__(a) _a = (a);                                                                    \
+        __typeof__(b) _b = (b);                                                                    \
+        _a < _b ? _a : _b;                                                                         \
     })
 
 VKAPI_ATTR VkBool32 VKAPI_CALL wn_util_debug_message_callback(
     VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
     VkDebugUtilsMessageTypeFlagsEXT messageType,
     const VkDebugUtilsMessengerCallbackDataEXT *pCallbackData,
-    void *pUserData) {
+    void *pUserData)
+{
     char *message_type = "";
-    if (messageType & VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT) {
+    if (messageType & VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT)
+    {
         message_type = "GENERAL";
-    } else if (messageType & VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT) {
+    }
+    else if (messageType & VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT)
+    {
         message_type = "VALIDATION";
-    } else if (messageType & VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT) {
+    }
+    else if (messageType & VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT)
+    {
         message_type = "PERFORMANCE";
     }
 
-    const char *message_id_name =
-        pCallbackData->pMessageIdName ? pCallbackData->pMessageIdName : "";
-    const char *message =
-        pCallbackData->pMessage ? pCallbackData->pMessage : "";
+    const char *message_id_name
+        = pCallbackData->pMessageIdName ? pCallbackData->pMessageIdName : "";
+    const char *message = pCallbackData->pMessage ? pCallbackData->pMessage : "";
 
-    if (messageSeverity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT) {
-        log_info("%s [%s (%d)] : %s\n", message_type, message_id_name,
-                 pCallbackData->messageIdNumber, message);
-    } else if (messageSeverity &
-               VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) {
-        log_warn("%s [%s (%d)] : %s\n", message_type, message_id_name,
-                 pCallbackData->messageIdNumber, message);
-    } else if (messageSeverity &
-               VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
-        log_error("%s [%s (%d)] : %s\n", message_type, message_id_name,
-                  pCallbackData->messageIdNumber, message);
+    if (messageSeverity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT)
+    {
+        log_info(
+            "%s [%s (%d)] : %s\n",
+            message_type,
+            message_id_name,
+            pCallbackData->messageIdNumber,
+            message);
+    }
+    else if (messageSeverity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT)
+    {
+        log_warn(
+            "%s [%s (%d)] : %s\n",
+            message_type,
+            message_id_name,
+            pCallbackData->messageIdNumber,
+            message);
+    }
+    else if (messageSeverity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)
+    {
+        log_error(
+            "%s [%s (%d)] : %s\n",
+            message_type,
+            message_id_name,
+            pCallbackData->messageIdNumber,
+            message);
     }
     return VK_FALSE;
 }
 
-char *wn_vk_result_to_string(VkResult result) {
-    switch (result) {
-#define TO_STR(s)                                                              \
-    case VK_##s:                                                               \
+char *wn_vk_result_to_string(VkResult result)
+{
+    switch (result)
+    {
+#define TO_STR(s)                                                                                  \
+    case VK_##s:                                                                                   \
         return #s
         TO_STR(SUCCESS);
         TO_STR(NOT_READY);
@@ -125,11 +151,13 @@ char *wn_vk_result_to_string(VkResult result) {
     }
 }
 
-typedef struct {
+typedef struct wn_shader_loader_t
+{
     shaderc_compiler_t compiler;
 } wn_shader_loader_t;
 
-wn_shader_loader_t wn_util_create_shader_loader() {
+wn_shader_loader_t wn_util_create_shader_loader()
+{
     wn_shader_loader_t loader = {
         .compiler = shaderc_compiler_initialize(),
     };
@@ -137,17 +165,20 @@ wn_shader_loader_t wn_util_create_shader_loader() {
     return loader;
 }
 
-void wn_util_destroy_shader_loader(wn_shader_loader_t *loader) {
+void wn_util_destroy_shader_loader(wn_shader_loader_t *loader)
+{
     shaderc_compiler_release(loader->compiler);
 }
 
-typedef struct {
+typedef struct wn_file_source_t
+{
     char *file_name;
     char *content;
     size_t size;
 } wn_file_source_t;
 
-typedef struct {
+typedef struct wn_shader_t
+{
     wn_file_source_t source;
     uint32_t *spirv;
     char *entry;
@@ -156,11 +187,13 @@ typedef struct {
 } wn_shader_t;
 
 // NOTE: Inefficient but w/e really
-wn_file_source_t wn_util_read_file(const char *file_name) {
+wn_file_source_t wn_util_read_file(const char *file_name)
+{
     FILE *file = fopen(file_name, "rb");
     char *buffer = NULL;
     wn_file_source_t ret;
-    if (file) {
+    if (file)
+    {
         fseek(file, 0, SEEK_END);
         size_t file_size = ftell(file);
         rewind(file);
@@ -169,7 +202,8 @@ wn_file_source_t wn_util_read_file(const char *file_name) {
         assert(buffer);
         size_t read_size = fread(buffer, sizeof(char), file_size, file);
         // FIXME
-        if (file_size != read_size) {
+        if (file_size != read_size)
+        {
             log_fatal("Error reading shader file %s", file_name);
             exit(EXIT_FAILURE);
         }
@@ -179,7 +213,9 @@ wn_file_source_t wn_util_read_file(const char *file_name) {
         ret.size = file_size;
 
         fclose(file);
-    } else {
+    }
+    else
+    {
         log_fatal("Couldn't load file");
         exit(EXIT_FAILURE);
     }
@@ -188,12 +224,15 @@ wn_file_source_t wn_util_read_file(const char *file_name) {
 }
 
 // FIXME: none of this gets freed
-wn_shader_t wn_util_load_shader(wn_shader_loader_t *loader,
-                                const char *file_name,
-                                VkShaderStageFlags shader_stage) {
+wn_shader_t wn_util_load_shader(
+    wn_shader_loader_t *loader,
+    const char *file_name,
+    VkShaderStageFlags shader_stage)
+{
     wn_file_source_t content = wn_util_read_file(file_name);
     shaderc_shader_kind kind;
-    switch (shader_stage) {
+    switch (shader_stage)
+    {
     case VK_SHADER_STAGE_COMPUTE_BIT:
         kind = shaderc_compute_shader;
         break;
@@ -209,17 +248,24 @@ wn_shader_t wn_util_load_shader(wn_shader_loader_t *loader,
         break;
     }
 
-    const shaderc_compilation_result_t result =
-        shaderc_compile_into_spv(loader->compiler, content.content,
-                                 content.size, kind, file_name, "main", NULL);
+    const shaderc_compilation_result_t result = shaderc_compile_into_spv(
+        loader->compiler,
+        content.content,
+        content.size,
+        kind,
+        file_name,
+        "main",
+        NULL);
 
-    char *shader_err = shaderc_result_get_error_message(result);
+    const char *shader_err = shaderc_result_get_error_message(result);
 
-    if (!result) {
+    if (!result)
+    {
         log_error("Error compiling shader: %s.", file_name);
         exit(EXIT_FAILURE);
     }
-    if (shader_err[0] != '\0') {
+    if (shader_err[0] != '\0')
+    {
         log_debug("Shader error in compiling %s: %s", file_name, shader_err);
     }
 
