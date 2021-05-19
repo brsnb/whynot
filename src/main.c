@@ -11,11 +11,11 @@ whynot: main.c
 #include <GLFW/glfw3.h>
 // clang-format on
 #include <assert.h>
+#include <math.h>
 #include <memory.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <stdio.h>
-#include <vulkan/vulkan_core.h>
 #define STB_DS_IMPLEMENTATION
 #define STBDS_NO_SHORT_NAMES
 #include "log.h"
@@ -74,11 +74,159 @@ typedef union wn_v4f_t
     };
 } wn_v4f_t;
 
+typedef union wn_mat4f_t
+{
+    float mat4f[4][4];
+    wn_v4f_t v4f[4];
+    struct
+    {
+        float xx, xy, xz, xw;
+        float yx, yy, yz, yw;
+        float zx, zy, zz, zw;
+        float wx, wy, wz, ww;
+    };
+} wn_mat4f_t;
+
+/*
+ * NOTE: source coordinates are right handed y-up, +z out, +x right
+ *       dest coordinates are right handed y-down with z(depth) clip from 0.0(near) - 1.0(far)
+ */
+
+float wn_v3f_sqr_magnitude(const wn_v3f_t *v)
+{
+    return ((v->x * v->x) + (v->y * v->y) + (v->z * v->z));
+}
+
+float wn_v3f_magnitude(const wn_v3f_t *v)
+{
+    float sqr_mag = wn_v3f_sqr_magnitude(v);
+    return sqrtf(sqr_mag);
+}
+
+void wn_v3f_normalize(wn_v3f_t *v)
+{
+    float inv_mag = 1.0f / wn_v3f_magnitude(v);
+    v->x *= inv_mag;
+    v->y *= inv_mag;
+    v->z *= inv_mag;
+}
+
+wn_v3f_t wn_v3f_normalized(const wn_v3f_t *v)
+{
+    wn_v3f_t r = {
+        .x = v->x,
+        .y = v->y,
+        .z = v->z,
+    };
+    wn_v3f_normalize(&r);
+    return r;
+}
+
+float wn_v3f_dot(const wn_v3f_t *a, const wn_v3f_t *b)
+{
+    return ((a->x * b->x) + (a->y * b->y) + (a->z * b->z));
+}
+
+wn_v3f_t wn_v3f_cross(const wn_v3f_t *a, const wn_v3f_t *b)
+{
+    // clang-format off
+    return (wn_v3f_t) {
+        .x = (a->y * b->z) - (a->z * b->y),
+        .y = (a->z * b->x) - (a->x * b->z),
+        .z = (a->x * b->y) - (a->y * b->x),
+    };
+    // clang-format on
+}
+
+wn_v3f_t wn_v3f_minus(const wn_v3f_t *a, const wn_v3f_t *b)
+{
+    return (wn_v3f_t) { .x = (a->x - b->x), .y = (a->y - b->y), .z = (a->z - b->z) };
+}
+
+wn_mat4f_t wn_look_at(const wn_v3f_t *eye, const wn_v3f_t *at, const wn_v3f_t *up)
+{
+    wn_v3f_t f = wn_v3f_minus(at, eye);
+    wn_v3f_normalize(&f);
+    wn_v3f_t r = wn_v3f_cross(&f, up);
+    wn_v3f_normalize(&r);
+    wn_v3f_t u = wn_v3f_cross(&r, &f);
+
+    wn_v3f_t w = { -wn_v3f_dot(&r, eye), -wn_v3f_dot(&u, eye), wn_v3f_dot(&f, eye) };
+
+    // clang-format off
+    return (wn_mat4f_t) {
+        .v4f = {
+            (wn_v4f_t) {r.x, u.x, -f.x, 0.0f},
+            (wn_v4f_t) {r.y, u.y, -f.y, 0.0f},
+            (wn_v4f_t) {r.z, u.z, -f.z, 0.0f},
+            (wn_v4f_t) {w.x, w.y, w.z, 1.0f},
+        }
+    };
+    // clang-format on
+}
+
+wn_mat4f_t wn_perspective(float vertical_fov, float aspect_ratio, float z_near, float z_far)
+{
+    float t = tanf(vertical_fov / 2.0f);
+    float sy = 1.0f / t;
+    float sx = sy / aspect_ratio;
+    float nmf = z_near - z_far;
+
+    // clang-format off
+    return (wn_mat4f_t) {
+        .v4f = {
+            (wn_v4f_t) {sx, 0.0f, 0.0f, 0.0f},
+            (wn_v4f_t) {0.0f, -sy, 0.0f, 0.0f},
+            (wn_v4f_t) {0.0f, 0.0f, z_far / nmf, -1.0},
+            (wn_v4f_t) {0.0f, 0.0f, z_near * z_far / nmf, 0.0f},
+        }
+    };
+    // clang-format on
+}
+
+wn_mat4f_t wn_from_rotation_z(float angle)
+{
+    float s = sinf(angle);
+    float c = cosf(angle);
+
+    // clang-format off
+    return (wn_mat4f_t) {
+        .v4f = {
+            (wn_v4f_t) {c, s, 0.0f, 0.0f},
+            (wn_v4f_t) {-s, c, 0.0f, 0.0f},
+            (wn_v4f_t) {0.0f, 0.0f, 1.0f, 0.0f},
+            (wn_v4f_t) {0.0f, 0.0f, 0.0f, 1.0f},
+        }
+    };
+    // clang-format on
+}
+
+wn_mat4f_t wn_mat4f_indentity()
+{
+    // clang-format off
+    return (wn_mat4f_t) {
+        .v4f = {
+            (wn_v4f_t) {1.0f, 0.0f, 0.0f, 0.0f},
+            (wn_v4f_t) {0.0f, 1.0f, 0.0f, 0.0f},
+            (wn_v4f_t) {0.0f, 0.0f, 1.0f, 0.0f},
+            (wn_v4f_t) {0.0f, 0.0f, 0.0f, 1.0f},
+        }
+    };
+    // clang-format on
+}
+
 typedef struct wn_vertex_t
 {
     wn_v2f_t pos;
     wn_v3f_t color;
 } wn_vertex_t;
+
+typedef struct wn_mvp_t
+{
+    wn_mat4f_t model;
+    wn_mat4f_t view;
+    wn_mat4f_t proj;
+} wn_mvp_t;
 
 VkVertexInputBindingDescription wn_vertex_get_input_binding_desc()
 {
@@ -110,12 +258,14 @@ VkVertexInputAttributeDescription *wn_vertex_get_attribute_desc()
     return desc;
 }
 
-#define NVERTICES 3
-wn_vertex_t vertices[3] = {
-    { { { 0.0f, -0.5f } }, { { 1.0f, 0.0f, 0.0f } } },
-    { { { 0.5f, 0.5f } }, { { 0.0f, 1.0f, 0.0f } } },
-    { { { -0.5f, 0.5f } }, { { 0.0f, 0.0f, 1.0f } } },
-};
+#define NVERTICES 4
+wn_vertex_t vertices[4] = { { { -0.5f, -0.5f }, { 1.0f, 0.0f, 0.0f } },
+                            { { 0.5f, -0.5f }, { 0.0f, 1.0f, 0.0f } },
+                            { { 0.5f, 0.5f }, { 0.0f, 0.0f, 1.0f } },
+                            { { -0.5f, 0.5f }, { 1.0f, 1.0f, 1.0f } } };
+
+#define NINDICES 6
+uint16_t indices[6] = { 0, 1, 2, 2, 3, 0 };
 
 // try and wrap GLFW dependency...
 typedef struct wn_window_t
@@ -164,9 +314,15 @@ void wn_window_create_surface(VkInstance instance, wn_window_t *window, VkSurfac
     WN_VK_CHECK(glfwCreateWindowSurface(instance, window->window, NULL, surface));
 }
 
-int wn_window_should_close(wn_window_t *window) { return glfwWindowShouldClose(window->window); }
+int wn_window_should_close(wn_window_t *window)
+{
+    return glfwWindowShouldClose(window->window);
+}
 
-void wn_window_poll_events(void) { glfwPollEvents(); }
+void wn_window_poll_events(void)
+{
+    glfwPollEvents();
+}
 
 const char **wn_window_get_required_exts(uint32_t *nexts)
 {
@@ -327,6 +483,8 @@ typedef struct wn_frame_t
     // VkImage depth_image;
     // VkImageView depth_image_view;
     VkFramebuffer framebuffer;
+    wn_buffer_t ubo;
+    VkDescriptorSet ubo_desc_set;
     // VkCommandBuffer draw_buffer // TODO: maybe??
     // VkSemaphore image_available
 } wn_frame_t;
@@ -336,6 +494,8 @@ typedef struct wn_swapchain_t
     VkSwapchainKHR swapchain;
     uint32_t nframes;
     wn_frame_t *frames;
+    VkDescriptorSetLayout desc_set_layout;
+    VkDescriptorPool descriptor_pool; // FIXME: this is getting sloppy
 } wn_swapchain_t;
 
 typedef struct wn_render_t
@@ -370,6 +530,7 @@ typedef struct wn_render_t
     VkCommandBuffer *command_buffers;
 
     wn_buffer_t vertex_buffer;
+    wn_buffer_t index_buffer;
 
     // debug
     VkDebugUtilsMessengerEXT debug_messenger;
@@ -464,12 +625,12 @@ wn_surface_t wn_surface_new(
             height = (uint32_t)height,
         };
 
-        surface.extent.width = WN_MAX(
+        surface.extent.width = wn_u32_max(
             surface_caps.maxImageExtent.width,
-            WN_MIN(surface_caps.maxImageExtent.width, surface_extent.width));
-        surface.extent.height = WN_MAX(
+            wn_u32_min(surface_caps.maxImageExtent.width, surface_extent.width));
+        surface.extent.height = wn_u32_max(
             surface_caps.maxImageExtent.height,
-            WN_MIN(surface_caps.maxImageExtent.height, surface_extent.height));
+            wn_u32_min(surface_caps.maxImageExtent.height, surface_extent.height));
     }
 
     return surface;
@@ -484,6 +645,7 @@ void wn_surface_destroy(wn_surface_t *surface)
 // TODO: maybe decouple from glfw and just pass desired width/height
 wn_swapchain_t wn_swapchain_new(
     VkDevice logical_device,
+    VkPhysicalDevice physical_device,
     wn_surface_t *surface,
     VkRenderPass render_pass)
 {
@@ -536,6 +698,71 @@ wn_swapchain_t wn_swapchain_new(
     swapchain.frames = (wn_frame_t *)malloc(swapchain.nframes * sizeof(wn_frame_t));
     assert(swapchain.frames);
 
+    /*
+     * descriptor set
+     */
+    VkDescriptorSetLayoutBinding mvp_binding = {
+        .binding = 0,
+        .descriptorCount = 1,
+        .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+        .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+        .pImmutableSamplers = NULL,
+    };
+
+    VkDescriptorSetLayoutCreateInfo desc_set_layout_info = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        .bindingCount = 1,
+        .pBindings = &mvp_binding,
+        .flags = 0,
+        .pNext = NULL,
+    };
+
+    WN_VK_CHECK(vkCreateDescriptorSetLayout(
+        logical_device,
+        &desc_set_layout_info,
+        NULL,
+        &swapchain.desc_set_layout));
+
+    /*
+     * descriptor pool
+     */
+    VkDescriptorPoolSize desc_pool_size = {
+        .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+        .descriptorCount = swapchain.nframes,
+    };
+
+    VkDescriptorPoolCreateInfo desc_pool_info = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+        .poolSizeCount = 1,
+        .pPoolSizes = &desc_pool_size,
+        .maxSets = swapchain.nframes,
+        .flags = 0,
+        .pNext = NULL,
+    };
+
+    WN_VK_CHECK(
+        vkCreateDescriptorPool(logical_device, &desc_pool_info, NULL, &swapchain.descriptor_pool));
+
+    VkDescriptorSetLayout *layouts = malloc(sizeof(VkDescriptorSetLayout) * swapchain.nframes);
+    assert(layouts);
+
+    for (uint32_t i = 0; i < swapchain.nframes; i++)
+    {
+        layouts[i] = swapchain.desc_set_layout;
+    }
+
+    VkDescriptorSetAllocateInfo desc_set_alloc_info = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .descriptorPool = swapchain.descriptor_pool,
+        .descriptorSetCount = swapchain.nframes,
+        .pSetLayouts = layouts,
+        .pNext = NULL,
+    };
+
+    VkDescriptorSet *desc_sets = malloc(sizeof(VkDescriptorSet) * swapchain.nframes);
+    assert(desc_sets);
+    WN_VK_CHECK(vkAllocateDescriptorSets(logical_device, &desc_set_alloc_info, desc_sets));
+
     for (uint32_t i = 0; i < swapchain.nframes; i++)
     {
         swapchain.frames[i].image = images[i];
@@ -576,7 +803,45 @@ wn_swapchain_t wn_swapchain_new(
             &framebuffer_info,
             NULL,
             &swapchain.frames[i].framebuffer));
+
+        VkDeviceSize buffer_size = sizeof(wn_mvp_t);
+
+        swapchain.frames[i].ubo = wn_buffer_new(
+            logical_device,
+            physical_device,
+            buffer_size,
+            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+        /*
+         * descriptor set
+         */
+        swapchain.frames[i].ubo_desc_set = desc_sets[i];
+
+        VkDescriptorBufferInfo desc_buf_info = {
+            .buffer = swapchain.frames[i].ubo.handle,
+            .offset = 0,
+            .range = sizeof(wn_mvp_t),
+        };
+
+        VkWriteDescriptorSet desc_set_write = {
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = swapchain.frames[i].ubo_desc_set,
+            .dstBinding = 0,
+            .dstArrayElement = 0,
+            .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            .descriptorCount = 1,
+            .pBufferInfo = &desc_buf_info,
+            .pImageInfo = NULL,
+            .pTexelBufferView = NULL,
+            .pNext = NULL,
+        };
+
+        vkUpdateDescriptorSets(logical_device, 1, &desc_set_write, 0, NULL);
     }
+
+    free(layouts);
+    free(desc_sets);
 
     return swapchain;
 }
@@ -588,8 +853,12 @@ void wn_swapchain_destroy(VkDevice device, wn_swapchain_t *swapchain)
     {
         vkDestroyImageView(device, swapchain->frames[i].image_view, NULL);
         vkDestroyFramebuffer(device, swapchain->frames[i].framebuffer, NULL);
+        vkDestroyBuffer(device, swapchain->frames[i].ubo.handle, NULL);
+        vkFreeMemory(device, swapchain->frames[i].ubo.memory, NULL);
     }
     free(swapchain->frames);
+    vkDestroyDescriptorSetLayout(device, swapchain->desc_set_layout, NULL);
+    vkDestroyDescriptorPool(device, swapchain->descriptor_pool, NULL);
     vkDestroySwapchainKHR(device, swapchain->swapchain, NULL);
 }
 
@@ -801,7 +1070,11 @@ wn_render_t wn_render_init(wn_window_t *window)
     /*
      *    swapchain
      */
-    render.swapchain = wn_swapchain_new(render.logical_device, surface, render.render_pass);
+    render.swapchain = wn_swapchain_new(
+        render.logical_device,
+        render.physical_device,
+        surface,
+        render.render_pass);
 
     wn_swapchain_t *swapchain = &render.swapchain;
 
@@ -902,7 +1175,7 @@ wn_render_t wn_render_init(wn_window_t *window)
         .rasterizerDiscardEnable = VK_FALSE,
         .polygonMode = VK_POLYGON_MODE_FILL,
         .lineWidth = 1.0f,
-        .cullMode = VK_CULL_MODE_BACK_BIT,
+        .cullMode = VK_CULL_MODE_NONE,
         .frontFace = VK_FRONT_FACE_CLOCKWISE,
         .depthBiasEnable = VK_FALSE,
     };
@@ -942,6 +1215,12 @@ wn_render_t wn_render_init(wn_window_t *window)
     // pipeline layout
     VkPipelineLayoutCreateInfo pipeline_layout_info = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .setLayoutCount = 1,
+        .pSetLayouts = &render.swapchain.desc_set_layout,
+        .flags = 0,
+        .pushConstantRangeCount = 0,
+        .pPushConstantRanges = NULL,
+        .pNext = NULL,
     };
 
     WN_VK_CHECK(vkCreatePipelineLayout(
@@ -1017,14 +1296,7 @@ wn_render_t wn_render_init(wn_window_t *window)
         buffer_size,
         VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    /*
-        VkCommandBufferAllocateInfo cb_info = {
-            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-            .commandPool = render.command_pool,
-            .commandBufferCount = 1,
-            .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-        };
-    */
+
     VkCommandBuffer transfer_cmd_buf = NULL;
     vkAllocateCommandBuffers(
         render.logical_device,
@@ -1045,6 +1317,70 @@ wn_render_t wn_render_init(wn_window_t *window)
         transfer_cmd_buf,
         staging_buffer.handle,
         render.vertex_buffer.handle,
+        1,
+        &(VkBufferCopy) { .srcOffset = 0, .dstOffset = 0, .size = buffer_size });
+
+    vkEndCommandBuffer(transfer_cmd_buf);
+
+    vkQueueSubmit(
+        render.grapics_queue,
+        1,
+        &(VkSubmitInfo) { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                          .commandBufferCount = 1,
+                          .pCommandBuffers = &transfer_cmd_buf },
+        NULL);
+    vkQueueWaitIdle(render.grapics_queue);
+
+    vkFreeCommandBuffers(render.logical_device, render.command_pool, 1, &transfer_cmd_buf);
+
+    vkDestroyBuffer(render.logical_device, staging_buffer.handle, NULL);
+    vkFreeMemory(render.logical_device, staging_buffer.memory, NULL);
+
+    /*
+     *  index buffer
+     */
+    buffer_size = sizeof(indices[0]) * NINDICES;
+
+    staging_buffer = wn_buffer_new(
+        render.logical_device,
+        render.physical_device,
+        buffer_size,
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+    data = NULL;
+    WN_VK_CHECK(
+        vkMapMemory(render.logical_device, staging_buffer.memory, 0, buffer_size, 0, &data));
+    memcpy(data, indices, (size_t)buffer_size);
+    vkUnmapMemory(render.logical_device, staging_buffer.memory);
+
+    render.index_buffer = wn_buffer_new(
+        render.logical_device,
+        render.physical_device,
+        buffer_size,
+        VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+    transfer_cmd_buf = NULL;
+    vkAllocateCommandBuffers(
+        render.logical_device,
+        &(VkCommandBufferAllocateInfo) {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            .commandPool = render.command_pool,
+            .commandBufferCount = 1,
+            .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        },
+        &transfer_cmd_buf);
+
+    vkBeginCommandBuffer(
+        transfer_cmd_buf,
+        &(VkCommandBufferBeginInfo) { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                                      .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT });
+
+    vkCmdCopyBuffer(
+        transfer_cmd_buf,
+        staging_buffer.handle,
+        render.index_buffer.handle,
         1,
         &(VkBufferCopy) { .srcOffset = 0, .dstOffset = 0, .size = buffer_size });
 
@@ -1121,8 +1457,23 @@ wn_render_t wn_render_init(wn_window_t *window)
             1,
             &render.vertex_buffer.handle,
             &offsets);
+        vkCmdBindIndexBuffer(
+            render.command_buffers[i],
+            render.index_buffer.handle,
+            0,
+            VK_INDEX_TYPE_UINT16);
 
-        vkCmdDraw(render.command_buffers[i], 3, 1, 0, 0);
+        vkCmdBindDescriptorSets(
+            render.command_buffers[i],
+            VK_PIPELINE_BIND_POINT_GRAPHICS,
+            render.graphics_pipeline_layout,
+            0,
+            1,
+            &render.swapchain.frames[i].ubo_desc_set,
+            0,
+            NULL);
+
+        vkCmdDrawIndexed(render.command_buffers[i], NINDICES, 1, 0, 0, 0);
 
         vkCmdEndRenderPass(render.command_buffers[i]);
 
@@ -1243,8 +1594,11 @@ void wn_swapchain_recreate(wn_render_t *render, wn_window_t *window)
     WN_VK_CHECK(
         vkCreateRenderPass(render->logical_device, &render_pass_info, NULL, &render->render_pass));
 
-    render->swapchain
-        = wn_swapchain_new(render->logical_device, &render->surface, render->render_pass);
+    render->swapchain = wn_swapchain_new(
+        render->logical_device,
+        render->physical_device,
+        &render->surface,
+        render->render_pass);
 
     VkCommandBufferAllocateInfo command_buffer_info = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
@@ -1312,8 +1666,23 @@ void wn_swapchain_recreate(wn_render_t *render, wn_window_t *window)
             1,
             &render->vertex_buffer.handle,
             &offsets);
+        vkCmdBindIndexBuffer(
+            render->command_buffers[i],
+            render->index_buffer.handle,
+            0,
+            VK_INDEX_TYPE_UINT16);
 
-        vkCmdDraw(render->command_buffers[i], 3, 1, 0, 0);
+        vkCmdBindDescriptorSets(
+            render->command_buffers[i],
+            VK_PIPELINE_BIND_POINT_GRAPHICS,
+            render->graphics_pipeline_layout,
+            0,
+            1,
+            &render->swapchain.frames[i].ubo_desc_set,
+            0,
+            NULL);
+
+        vkCmdDrawIndexed(render->command_buffers[i], NINDICES, 1, 0, 0, 0);
 
         vkCmdEndRenderPass(render->command_buffers[i]);
 
@@ -1349,6 +1718,31 @@ void wn_draw(wn_render_t *render, wn_window_t *window)
         log_fatal("Could not acquire swapchain image");
         exit(EXIT_FAILURE);
     }
+
+    // ubo
+    wn_v3f_t eye = { 2.0f, 2.0f, 2.0f };
+    wn_v3f_t at = { 0.0f, 0.0f, 0.0f };
+    wn_v3f_t up = { 0.0f, 0.0f, 1.0f };
+    wn_mvp_t mvp = {
+        .model = wn_from_rotation_z(M_PI_2),
+        .view = wn_look_at(&eye, &at, &up),
+        .proj = wn_perspective(
+            M_PI_4,
+            (float)render->surface.extent.width / (float)render->surface.extent.height,
+            0.1f,
+            10.0f),
+    };
+
+    void *data = NULL;
+    WN_VK_CHECK(vkMapMemory(
+        render->logical_device,
+        render->swapchain.frames[image_index].ubo.memory,
+        0,
+        sizeof(mvp),
+        0,
+        &data));
+    memcpy(data, &mvp, sizeof(mvp));
+    vkUnmapMemory(render->logical_device, render->swapchain.frames[image_index].ubo.memory);
 
     if (render->image_in_flight[image_index] != NULL)
     {
@@ -1435,6 +1829,8 @@ void wn_destroy(wn_render_t *render)
 
     vkDestroyBuffer(render->logical_device, render->vertex_buffer.handle, NULL);
     vkFreeMemory(render->logical_device, render->vertex_buffer.memory, NULL);
+    vkDestroyBuffer(render->logical_device, render->index_buffer.handle, NULL);
+    vkFreeMemory(render->logical_device, render->index_buffer.memory, NULL);
 
     // FIXME
     wn_surface_destroy(&render->surface);

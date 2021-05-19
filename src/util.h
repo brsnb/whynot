@@ -31,19 +31,8 @@ whynot: util.h
         }                                                                                          \
     }
 
-#define WN_MAX(a, b)                                                                               \
-    ({                                                                                             \
-        __typeof__(a) _a = (a);                                                                    \
-        __typeof__(b) _b = (b);                                                                    \
-        _a > _b ? _a : _b;                                                                         \
-    })
-
-#define WN_MIN(a, b)                                                                               \
-    ({                                                                                             \
-        __typeof__(a) _a = (a);                                                                    \
-        __typeof__(b) _b = (b);                                                                    \
-        _a < _b ? _a : _b;                                                                         \
-    })
+extern inline uint32_t wn_u32_max(uint32_t a, uint32_t b) { return a > b ? a : b; }
+extern inline uint32_t wn_u32_min(uint32_t a, uint32_t b) { return a < b ? a : b; }
 
 VKAPI_ATTR VkBool32 VKAPI_CALL wn_util_debug_message_callback(
     VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
@@ -229,6 +218,7 @@ wn_shader_t wn_util_load_shader(
     const char *file_name,
     VkShaderStageFlags shader_stage)
 {
+    log_info("Loading shader: %s...", file_name);
     wn_file_source_t content = wn_util_read_file(file_name);
     shaderc_shader_kind kind;
     switch (shader_stage)
@@ -276,6 +266,8 @@ wn_shader_t wn_util_load_shader(
         .size = shaderc_result_get_length(result),
         .spirv = (uint32_t *)shaderc_result_get_bytes(result),
     };
+
+    log_info("Loaded shader: %s!", file_name);
 
     return shader;
 }
