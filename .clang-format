@@ -13,6 +13,7 @@ BinPackParameters: false
 BreakBeforeBraces: Allman
 ColumnLimit: 100
 PointerAlignment: Right
+IncludeBlocks: Preserve
 IndentPPDirectives: BeforeHash
 
 PenaltyBreakBeforeFirstCallParameter: 0

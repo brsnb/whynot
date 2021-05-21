@@ -1,10 +1,19 @@
 /*
 ===========================================================================
 
-whynot: main.c
+whynot::main.c
 
 ===========================================================================
 */
+
+#include "util.h"
+
+#include "log.h"
+#define STB_DS_IMPLEMENTATION
+#define STBDS_NO_SHORT_NAMES
+#include "stb_ds.h"
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
 
 // clang-format off
 #include <vulkan/vulkan.h>
@@ -16,11 +25,6 @@ whynot: main.c
 #include <stdint.h>
 #include <stdlib.h>
 #include <stdio.h>
-#define STB_DS_IMPLEMENTATION
-#define STBDS_NO_SHORT_NAMES
-#include "log.h"
-#include "stb_ds.h"
-#include "util.h"
 
 #define ENGINE_NAME "whynot"
 #define VK_API_VERSION VK_API_VERSION_1_2
@@ -143,7 +147,7 @@ wn_v3f_t wn_v3f_minus(const wn_v3f_t *a, const wn_v3f_t *b)
     return (wn_v3f_t) { .x = (a->x - b->x), .y = (a->y - b->y), .z = (a->z - b->z) };
 }
 
-wn_mat4f_t wn_look_at(const wn_v3f_t *eye, const wn_v3f_t *at, const wn_v3f_t *up)
+wn_mat4f_t wn_mat4f_look_at(const wn_v3f_t *eye, const wn_v3f_t *at, const wn_v3f_t *up)
 {
     wn_v3f_t f = wn_v3f_minus(at, eye);
     wn_v3f_normalize(&f);
@@ -165,7 +169,7 @@ wn_mat4f_t wn_look_at(const wn_v3f_t *eye, const wn_v3f_t *at, const wn_v3f_t *u
     // clang-format on
 }
 
-wn_mat4f_t wn_perspective(float vertical_fov, float aspect_ratio, float z_near, float z_far)
+wn_mat4f_t wn_mat4f_perspective(float vertical_fov, float aspect_ratio, float z_near, float z_far)
 {
     float t = tanf(vertical_fov / 2.0f);
     float sy = 1.0f / t;
@@ -184,7 +188,7 @@ wn_mat4f_t wn_perspective(float vertical_fov, float aspect_ratio, float z_near, 
     // clang-format on
 }
 
-wn_mat4f_t wn_from_rotation_z(float angle)
+wn_mat4f_t wn_mat4f_from_rotation_z(float angle)
 {
     float s = sinf(angle);
     float c = cosf(angle);
@@ -341,7 +345,7 @@ typedef struct wn_qfi_t
 // TODO: Find other queues
 wn_qfi_t wn_find_queue_families(VkPhysicalDevice physical_device, VkSurfaceKHR surface)
 {
-    wn_qfi_t qfi;
+    wn_qfi_t qfi = { 0 };
     uint32_t nqf = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &nqf, NULL);
     VkQueueFamilyProperties qfp[nqf];
@@ -408,25 +412,17 @@ typedef struct wn_buffer_t
 wn_buffer_t wn_buffer_new(
     VkDevice logical_device,
     VkPhysicalDevice physical_device,
-    VkDeviceSize size,
-    VkBufferUsageFlags usage,
+    VkBufferCreateInfo *info,
     VkMemoryPropertyFlags properties)
 {
 
     wn_buffer_t buffer = { 0 };
 
-    buffer.size = size;
-    buffer.usage = usage;
-    buffer.sharing_mode = VK_SHARING_MODE_EXCLUSIVE;
+    buffer.size = info->size;
+    buffer.usage = info->usage;
+    buffer.sharing_mode = info->sharingMode;
 
-    VkBufferCreateInfo bci = {
-        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-        .size = buffer.size,
-        .usage = buffer.usage,
-        .sharingMode = buffer.sharing_mode,
-    };
-
-    WN_VK_CHECK(vkCreateBuffer(logical_device, &bci, NULL, &buffer.handle));
+    WN_VK_CHECK(vkCreateBuffer(logical_device, info, NULL, &buffer.handle));
 
     VkMemoryRequirements mem_reqs;
     vkGetBufferMemoryRequirements(logical_device, buffer.handle, &mem_reqs);
@@ -435,7 +431,7 @@ wn_buffer_t wn_buffer_new(
     VkPhysicalDeviceMemoryProperties mem_props;
     vkGetPhysicalDeviceMemoryProperties(physical_device, &mem_props);
 
-    uint32_t mem_idx;
+    uint32_t mem_idx = 0;
     for (uint32_t i = 0; i < mem_props.memoryTypeCount; i++)
     {
         if ((mem_reqs.memoryTypeBits & (1 << i))
@@ -458,8 +454,87 @@ wn_buffer_t wn_buffer_new(
     return buffer;
 }
 
-// TODO: IMPLEMENT
-void wn_buffer_destroy(wn_buffer_t *buffer);
+void wn_buffer_destroy(wn_buffer_t *buffer, VkDevice logical_device)
+{
+    vkDestroyBuffer(logical_device, buffer->handle, NULL);
+    vkFreeMemory(logical_device, buffer->memory, NULL);
+}
+
+typedef struct wn_image_t
+{
+    VkImage handle;
+    VkDeviceMemory memory;
+    VkDeviceSize size;
+} wn_image_t;
+
+wn_image_t wn_image_new(
+    VkImageCreateInfo *info,
+    VkMemoryPropertyFlags properties,
+    VkDevice logical_device,
+    VkPhysicalDevice physical_device)
+{
+    wn_image_t image = { 0 };
+    WN_VK_CHECK(vkCreateImage(logical_device, info, NULL, &image.handle));
+
+    VkMemoryRequirements mem_reqs = { 0 };
+    vkGetImageMemoryRequirements(logical_device, image.handle, &mem_reqs);
+
+    VkPhysicalDeviceMemoryProperties mem_props;
+    vkGetPhysicalDeviceMemoryProperties(physical_device, &mem_props);
+
+    // NOTE: duplicated x2
+    uint32_t mem_idx = 0;
+    for (uint32_t i = 0; i < mem_props.memoryTypeCount; i++)
+    {
+        if ((mem_reqs.memoryTypeBits & (1 << i))
+            && (mem_props.memoryTypes[i].propertyFlags & properties) == properties)
+        {
+            mem_idx = i;
+        }
+    }
+
+    VkMemoryAllocateInfo alloc_info = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = mem_reqs.size,
+        .memoryTypeIndex = mem_idx,
+    };
+
+    WN_VK_CHECK(vkAllocateMemory(logical_device, &alloc_info, NULL, &image.memory));
+
+    WN_VK_CHECK(vkBindImageMemory(logical_device, image.handle, image.memory, 0));
+
+    return image;
+}
+
+void wn_texture_new(VkDevice logical_device, VkPhysicalDevice physical_device, const char *filename)
+{
+    int width, height, channels;
+    uint8_t *image_data = stbi_load(filename, &width, &height, &channels, STBI_rgb_alpha);
+
+    VkDeviceSize size = width * height * STBI_rgb_alpha;
+
+    wn_buffer_t staging = wn_buffer_new(
+        logical_device,
+        physical_device,
+        &(VkBufferCreateInfo) {
+            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            .size = size,
+            .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+            .flags = 0,
+            .queueFamilyIndexCount = 0,
+            .pQueueFamilyIndices = NULL,
+            .pNext = NULL,
+        },
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+    void *data = NULL;
+    WN_VK_CHECK(vkMapMemory(logical_device, staging.memory, 0, size, 0, &data));
+    memcpy(data, image_data, (size_t)size);
+    vkUnmapMemory(logical_device, staging.memory);
+
+    stbi_image_free(image_data);
+}
 
 typedef struct wn_surface_t
 {
@@ -809,10 +884,17 @@ wn_swapchain_t wn_swapchain_new(
         swapchain.frames[i].ubo = wn_buffer_new(
             logical_device,
             physical_device,
-            buffer_size,
-            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+            &(VkBufferCreateInfo) {
+                .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                .size = buffer_size,
+                .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+                .flags = 0,
+                .queueFamilyIndexCount = 0,
+                .pQueueFamilyIndices = NULL,
+                .pNext = NULL,
+            },
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-
         /*
          * descriptor set
          */
@@ -853,8 +935,7 @@ void wn_swapchain_destroy(VkDevice device, wn_swapchain_t *swapchain)
     {
         vkDestroyImageView(device, swapchain->frames[i].image_view, NULL);
         vkDestroyFramebuffer(device, swapchain->frames[i].framebuffer, NULL);
-        vkDestroyBuffer(device, swapchain->frames[i].ubo.handle, NULL);
-        vkFreeMemory(device, swapchain->frames[i].ubo.memory, NULL);
+        wn_buffer_destroy(&swapchain->frames[i].ubo, device);
     }
     free(swapchain->frames);
     vkDestroyDescriptorSetLayout(device, swapchain->desc_set_layout, NULL);
@@ -1280,8 +1361,16 @@ wn_render_t wn_render_init(wn_window_t *window)
     wn_buffer_t staging_buffer = wn_buffer_new(
         render.logical_device,
         render.physical_device,
-        buffer_size,
-        VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        &(VkBufferCreateInfo) {
+            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            .size = buffer_size,
+            .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+            .flags = 0,
+            .queueFamilyIndexCount = 0,
+            .pQueueFamilyIndices = NULL,
+            .pNext = NULL,
+        },
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
     void *data = NULL;
@@ -1293,8 +1382,16 @@ wn_render_t wn_render_init(wn_window_t *window)
     render.vertex_buffer = wn_buffer_new(
         render.logical_device,
         render.physical_device,
-        buffer_size,
-        VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+        &(VkBufferCreateInfo) {
+            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            .size = buffer_size,
+            .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+            .flags = 0,
+            .queueFamilyIndexCount = 0,
+            .pQueueFamilyIndices = NULL,
+            .pNext = NULL,
+        },
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
     VkCommandBuffer transfer_cmd_buf = NULL;
@@ -1333,8 +1430,7 @@ wn_render_t wn_render_init(wn_window_t *window)
 
     vkFreeCommandBuffers(render.logical_device, render.command_pool, 1, &transfer_cmd_buf);
 
-    vkDestroyBuffer(render.logical_device, staging_buffer.handle, NULL);
-    vkFreeMemory(render.logical_device, staging_buffer.memory, NULL);
+    wn_buffer_destroy(&staging_buffer, render.logical_device);
 
     /*
      *  index buffer
@@ -1344,8 +1440,16 @@ wn_render_t wn_render_init(wn_window_t *window)
     staging_buffer = wn_buffer_new(
         render.logical_device,
         render.physical_device,
-        buffer_size,
-        VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        &(VkBufferCreateInfo) {
+            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            .size = buffer_size,
+            .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+            .flags = 0,
+            .queueFamilyIndexCount = 0,
+            .pQueueFamilyIndices = NULL,
+            .pNext = NULL,
+        },
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
     data = NULL;
@@ -1357,8 +1461,16 @@ wn_render_t wn_render_init(wn_window_t *window)
     render.index_buffer = wn_buffer_new(
         render.logical_device,
         render.physical_device,
-        buffer_size,
-        VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+        &(VkBufferCreateInfo) {
+            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            .size = buffer_size,
+            .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+            .flags = 0,
+            .queueFamilyIndexCount = 0,
+            .pQueueFamilyIndices = NULL,
+            .pNext = NULL,
+        },
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
     transfer_cmd_buf = NULL;
@@ -1397,8 +1509,7 @@ wn_render_t wn_render_init(wn_window_t *window)
 
     vkFreeCommandBuffers(render.logical_device, render.command_pool, 1, &transfer_cmd_buf);
 
-    vkDestroyBuffer(render.logical_device, staging_buffer.handle, NULL);
-    vkFreeMemory(render.logical_device, staging_buffer.memory, NULL);
+    wn_buffer_destroy(&staging_buffer, render.logical_device);
 
     /*
      *  command buffers // TODO: Pull out for per wn_frame_t draw buffer??
@@ -1724,9 +1835,9 @@ void wn_draw(wn_render_t *render, wn_window_t *window)
     wn_v3f_t at = { 0.0f, 0.0f, 0.0f };
     wn_v3f_t up = { 0.0f, 0.0f, 1.0f };
     wn_mvp_t mvp = {
-        .model = wn_from_rotation_z(M_PI_2),
-        .view = wn_look_at(&eye, &at, &up),
-        .proj = wn_perspective(
+        .model = wn_mat4f_from_rotation_z(M_PI_2),
+        .view = wn_mat4f_look_at(&eye, &at, &up),
+        .proj = wn_mat4f_perspective(
             M_PI_4,
             (float)render->surface.extent.width / (float)render->surface.extent.height,
             0.1f,
@@ -1827,10 +1938,8 @@ void wn_destroy(wn_render_t *render)
         vkDestroyFence(render->logical_device, render->in_flight[i], NULL);
     }
 
-    vkDestroyBuffer(render->logical_device, render->vertex_buffer.handle, NULL);
-    vkFreeMemory(render->logical_device, render->vertex_buffer.memory, NULL);
-    vkDestroyBuffer(render->logical_device, render->index_buffer.handle, NULL);
-    vkFreeMemory(render->logical_device, render->index_buffer.memory, NULL);
+    wn_buffer_destroy(&render->vertex_buffer, render->logical_device);
+    wn_buffer_destroy(&render->index_buffer, render->logical_device);
 
     // FIXME
     wn_surface_destroy(&render->surface);

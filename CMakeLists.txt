@@ -15,9 +15,7 @@ add_executable(whynot
 
 target_compile_definitions(${NAME} PUBLIC LOG_USE_COLOR)
 target_compile_features(${NAME} PUBLIC c_std_11)
-target_compile_options(${NAME} PUBLIC -Wextra -Wall -Wshadow -Wno-missing-braces -fdiagnostics-color=always)
-
-#add_compile_options(-Wextra -Wall -fdiagnostics-color=always -DLOG_USE_COLOR -lstdc++)
+target_compile_options(${NAME} PUBLIC -Wextra -Wall -Wshadow -Wno-missing-braces -Wmissing-field-initializers-fdiagnostics-color=always)
 
 find_package(Vulkan REQUIRED)
 find_package(glfw3 REQUIRED)

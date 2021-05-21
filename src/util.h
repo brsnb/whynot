@@ -1,7 +1,7 @@
 /*
 ===========================================================================
 
-whynot: util.h
+whynot::render::util.h: rederer utilities
 
 ===========================================================================
 */
@@ -10,12 +10,10 @@ whynot: util.h
 
 #include "log.h"
 #include <assert.h>
-#include <bits/stdint-uintn.h>
 #include <shaderc/shaderc.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <vulkan/vulkan.h>
-#include <vulkan/vulkan_core.h>
 
 #define WN_VK_CHECK(f)                                                                             \
     {                                                                                              \
