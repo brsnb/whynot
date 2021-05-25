@@ -225,13 +225,6 @@ typedef struct wn_vertex_t
     wn_v3f_t color;
 } wn_vertex_t;
 
-typedef struct wn_mvp_t
-{
-    wn_mat4f_t model;
-    wn_mat4f_t view;
-    wn_mat4f_t proj;
-} wn_mvp_t;
-
 VkVertexInputBindingDescription wn_vertex_get_input_binding_desc()
 {
     VkVertexInputBindingDescription desc = {
@@ -262,13 +255,20 @@ VkVertexInputAttributeDescription *wn_vertex_get_attribute_desc()
     return desc;
 }
 
-#define NVERTICES 4
+typedef struct wn_mvp_t
+{
+    wn_mat4f_t model;
+    wn_mat4f_t view;
+    wn_mat4f_t proj;
+} wn_mvp_t;
+
+#define N_VERTICES 4
 wn_vertex_t vertices[4] = { { { -0.5f, -0.5f }, { 1.0f, 0.0f, 0.0f } },
                             { { 0.5f, -0.5f }, { 0.0f, 1.0f, 0.0f } },
                             { { 0.5f, 0.5f }, { 0.0f, 0.0f, 1.0f } },
                             { { -0.5f, 0.5f }, { 1.0f, 1.0f, 1.0f } } };
 
-#define NINDICES 6
+#define N_INDICES 6
 uint16_t indices[6] = { 0, 1, 2, 2, 3, 0 };
 
 // try and wrap GLFW dependency...
@@ -333,6 +333,8 @@ const char **wn_window_get_required_exts(uint32_t *nexts)
     return glfwGetRequiredInstanceExtensions(nexts);
 }
 
+// NOTE: spec allows for separate graphics and present queues, but it does not exist in any
+// implementation afaik
 typedef struct wn_qfi_t
 {
     uint32_t compute;
@@ -342,31 +344,63 @@ typedef struct wn_qfi_t
     VkQueueFlags supported;
 } wn_qfi_t;
 
-// TODO: Find other queues
-wn_qfi_t wn_find_queue_families(VkPhysicalDevice physical_device, VkSurfaceKHR surface)
+// TODO: could be useful for queuesubmit and commandpool management
+// it also allows for different queues to be created from same family if its available (with idx)
+// currently all queues are created with same idx in vkgetdevicequeue
+#if 0
+typedef struct wn_queue_t
+{
+    VkQueue queue;
+    uint32_t qfi;
+    uint32_t idx;
+} wn_queue_t;
+#endif
+
+wn_qfi_t wn_find_queue_families(VkPhysicalDevice gpu)
 {
     wn_qfi_t qfi = { 0 };
-    uint32_t nqf = 0;
-    vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &nqf, NULL);
-    VkQueueFamilyProperties qfp[nqf];
-    vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &nqf, qfp);
+    uint32_t n_qf = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(gpu, &n_qf, NULL);
+    VkQueueFamilyProperties qfp[n_qf];
+    vkGetPhysicalDeviceQueueFamilyProperties(gpu, &n_qf, qfp);
 
-    for (uint32_t i = 0; i < nqf; ++i)
+    for (uint32_t i = 0; i < n_qf; ++i)
     {
-        if (qfp[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)
-        {
-            VkBool32 supports_present = false;
-            vkGetPhysicalDeviceSurfaceSupportKHR(physical_device, i, surface, &supports_present);
-            // FIXME: Only selecting graphics + present queue, not seperate
-            if (!supports_present)
-            {
-                continue;
-            }
+        VkQueueFamilyProperties props = qfp[i];
 
-            qfi.graphics = i;
-            qfi.present = i;
-            qfi.supported |= VK_QUEUE_GRAPHICS_BIT;
-            break;
+        log_info("QUEUE IDX: %d, QUEUE COUNT: %d", i, props.queueCount);
+
+        // TODO: there is such a thing as using compute queue for present, look into it
+        if (props.queueFlags & VK_QUEUE_GRAPHICS_BIT)
+        {
+            if (!(qfi.supported & VK_QUEUE_GRAPHICS_BIT))
+            {
+                qfi.graphics = i;
+                qfi.present = i;
+                qfi.supported |= VK_QUEUE_GRAPHICS_BIT;
+            }
+        }
+
+        // try to find dedicated compute queue
+        if (props.queueFlags & VK_QUEUE_COMPUTE_BIT)
+        {
+            if (!(qfi.supported & VK_QUEUE_COMPUTE_BIT) && qfi.graphics != i)
+            {
+                qfi.compute = i;
+                qfi.supported |= VK_QUEUE_COMPUTE_BIT;
+            }
+        }
+
+        // try to find non-graphics transfer queue
+        if (props.queueFlags & VK_QUEUE_TRANSFER_BIT)
+        {
+            if (!(qfi.supported & VK_QUEUE_TRANSFER_BIT)
+                && !(props.queueFlags & VK_QUEUE_GRAPHICS_BIT)
+                && !(props.queueFlags & VK_QUEUE_COMPUTE_BIT))
+            {
+                qfi.compute = i;
+                qfi.supported |= VK_QUEUE_COMPUTE_BIT;
+            }
         }
     }
 
@@ -376,27 +410,119 @@ wn_qfi_t wn_find_queue_families(VkPhysicalDevice physical_device, VkSurfaceKHR s
         exit(EXIT_FAILURE);
     }
 
+    // TODO: there's probably a better way to do this
+    if (!(qfi.supported & VK_QUEUE_COMPUTE_BIT))
+    {
+        qfi.compute = qfi.graphics;
+    }
+    if (!(qfi.supported & VK_QUEUE_TRANSFER_BIT))
+    {
+        qfi.transfer = qfi.graphics;
+    }
+
     return qfi;
 }
 
-// TODO
-#if 0
 typedef struct wn_device_t
 {
-    VkPhysicalDevice physical_device;
+    VkDevice device;
 
-    VkPhysicalDeviceProperties physical_device_props;
-    VkPhysicalDeviceFeatures physical_device_features;
-    VkPhysicalDeviceMemoryProperties mem_props;
-
-    VkDevice logical_device;
     wn_qfi_t qfi;
-    VkQueue grapics_queue;
-    VkQueue present_queue;
 
-    VkCommandPool transfer_pool;
+    VkQueue graphics_queue;
+    VkQueue present_queue;
+    VkQueue compute_queue;
+    VkQueue transfer_queue;
+
+    VkPhysicalDevice gpu;
+
+    VkPhysicalDeviceProperties gpu_properties;
+    VkPhysicalDeviceFeatures gpu_features;
+    VkPhysicalDeviceMemoryProperties gpu_memory_properties;
 } wn_device_t;
-#endif
+
+wn_device_t wn_device_new(VkPhysicalDevice gpu)
+{
+    wn_device_t device = { 0 };
+
+    device.gpu = gpu;
+
+    vkGetPhysicalDeviceProperties(gpu, &device.gpu_properties);
+    vkGetPhysicalDeviceFeatures(gpu, &device.gpu_features);
+
+    device.qfi = wn_find_queue_families(gpu);
+
+    const float default_queue_prio = 0.0f;
+
+    // FIXME: hardcoded bad, there could be any number of acual queues based on how many are
+    // available in the queue family and if it is even more efficient to do so
+    VkDeviceQueueCreateInfo queue_infos[3] = { 0 };
+    {
+        VkDeviceQueueCreateInfo queue_info = {
+            .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+            .queueCount = 1,
+            .queueFamilyIndex = device.qfi.graphics,
+            .pQueuePriorities = &default_queue_prio,
+            .flags = 0,
+            .pNext = NULL,
+        };
+        queue_infos[0] = queue_info;
+    }
+    {
+        VkDeviceQueueCreateInfo queue_info = {
+            .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+            .queueCount = 1,
+            .queueFamilyIndex = device.qfi.compute,
+            .pQueuePriorities = &default_queue_prio,
+            .flags = 0,
+            .pNext = NULL,
+        };
+        queue_infos[1] = queue_info;
+    }
+    {
+        VkDeviceQueueCreateInfo queue_info = {
+            .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+            .queueCount = 1,
+            .queueFamilyIndex = device.qfi.transfer,
+            .pQueuePriorities = &default_queue_prio,
+            .flags = 0,
+            .pNext = NULL,
+        };
+        queue_infos[2] = queue_info;
+    }
+
+    VkPhysicalDeviceFeatures *enabled_features = NULL;
+    const char *device_exts = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
+
+    VkDeviceCreateInfo device_info = {
+        .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+        .pQueueCreateInfos = queue_infos,
+        .queueCreateInfoCount = 1,
+        .pEnabledFeatures = enabled_features,
+        .enabledExtensionCount = 1,
+        .ppEnabledExtensionNames = &device_exts,
+        // NOTE: this may not be compatible with < 1.2 vulkan implementation
+        .enabledLayerCount = 0,
+        .ppEnabledLayerNames = NULL,
+        .flags = 0,
+        .pNext = NULL,
+    };
+
+    WN_VK_CHECK(vkCreateDevice(gpu, &device_info, NULL, &device.device));
+
+    vkGetDeviceQueue(device.device, device.qfi.graphics, 0, &device.graphics_queue);
+    vkGetDeviceQueue(device.device, device.qfi.compute, 0, &device.compute_queue);
+    vkGetDeviceQueue(device.device, device.qfi.transfer, 0, &device.transfer_queue);
+
+    device.present_queue = NULL;
+
+    return device;
+}
+
+void wn_device_destroy(wn_device_t *device)
+{
+    vkDestroyDevice(device->device, NULL);
+}
 
 typedef struct wn_buffer_t
 {
@@ -407,11 +533,8 @@ typedef struct wn_buffer_t
     VkSharingMode sharing_mode;
 } wn_buffer_t;
 
-// TODO: maybe the best case for some sort of wn_device_t struct esp. with image
-//       resources later as well
 wn_buffer_t wn_buffer_new(
-    VkDevice logical_device,
-    VkPhysicalDevice physical_device,
+    const wn_device_t *device,
     VkBufferCreateInfo *info,
     VkMemoryPropertyFlags properties)
 {
@@ -422,20 +545,16 @@ wn_buffer_t wn_buffer_new(
     buffer.usage = info->usage;
     buffer.sharing_mode = info->sharingMode;
 
-    WN_VK_CHECK(vkCreateBuffer(logical_device, info, NULL, &buffer.handle));
+    WN_VK_CHECK(vkCreateBuffer(device->device, info, NULL, &buffer.handle));
 
     VkMemoryRequirements mem_reqs;
-    vkGetBufferMemoryRequirements(logical_device, buffer.handle, &mem_reqs);
-
-    // NOTE: here esp...
-    VkPhysicalDeviceMemoryProperties mem_props;
-    vkGetPhysicalDeviceMemoryProperties(physical_device, &mem_props);
+    vkGetBufferMemoryRequirements(device->device, buffer.handle, &mem_reqs);
 
     uint32_t mem_idx = 0;
-    for (uint32_t i = 0; i < mem_props.memoryTypeCount; i++)
+    for (uint32_t i = 0; i < device->gpu_memory_properties.memoryTypeCount; i++)
     {
         if ((mem_reqs.memoryTypeBits & (1 << i))
-            && (mem_props.memoryTypes[i].propertyFlags & properties) == properties)
+            && (device->gpu_memory_properties.memoryTypes[i].propertyFlags & properties))
         {
             mem_idx = i;
         }
@@ -445,11 +564,12 @@ wn_buffer_t wn_buffer_new(
         .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
         .allocationSize = mem_reqs.size,
         .memoryTypeIndex = mem_idx,
+        .pNext = NULL,
     };
 
-    WN_VK_CHECK(vkAllocateMemory(logical_device, &alloc_info, NULL, &buffer.memory));
+    WN_VK_CHECK(vkAllocateMemory(device->device, &alloc_info, NULL, &buffer.memory));
 
-    WN_VK_CHECK(vkBindBufferMemory(logical_device, buffer.handle, buffer.memory, 0));
+    WN_VK_CHECK(vkBindBufferMemory(device->device, buffer.handle, buffer.memory, 0));
 
     return buffer;
 }
@@ -468,26 +588,23 @@ typedef struct wn_image_t
 } wn_image_t;
 
 wn_image_t wn_image_new(
+    const wn_device_t *device,
     VkImageCreateInfo *info,
-    VkMemoryPropertyFlags properties,
-    VkDevice logical_device,
-    VkPhysicalDevice physical_device)
+    VkMemoryPropertyFlags properties)
 {
     wn_image_t image = { 0 };
-    WN_VK_CHECK(vkCreateImage(logical_device, info, NULL, &image.handle));
+
+    WN_VK_CHECK(vkCreateImage(device->device, info, NULL, &image.handle));
 
     VkMemoryRequirements mem_reqs = { 0 };
-    vkGetImageMemoryRequirements(logical_device, image.handle, &mem_reqs);
-
-    VkPhysicalDeviceMemoryProperties mem_props;
-    vkGetPhysicalDeviceMemoryProperties(physical_device, &mem_props);
+    vkGetImageMemoryRequirements(device->device, image.handle, &mem_reqs);
 
     // NOTE: duplicated x2
     uint32_t mem_idx = 0;
-    for (uint32_t i = 0; i < mem_props.memoryTypeCount; i++)
+    for (uint32_t i = 0; i < device->gpu_memory_properties.memoryTypeCount; i++)
     {
         if ((mem_reqs.memoryTypeBits & (1 << i))
-            && (mem_props.memoryTypes[i].propertyFlags & properties) == properties)
+            && (device->gpu_memory_properties.memoryTypes[i].propertyFlags & properties))
         {
             mem_idx = i;
         }
@@ -497,16 +614,17 @@ wn_image_t wn_image_new(
         .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
         .allocationSize = mem_reqs.size,
         .memoryTypeIndex = mem_idx,
+        .pNext = NULL,
     };
 
-    WN_VK_CHECK(vkAllocateMemory(logical_device, &alloc_info, NULL, &image.memory));
+    WN_VK_CHECK(vkAllocateMemory(device->device, &alloc_info, NULL, &image.memory));
 
-    WN_VK_CHECK(vkBindImageMemory(logical_device, image.handle, image.memory, 0));
+    WN_VK_CHECK(vkBindImageMemory(device->device, image.handle, image.memory, 0));
 
     return image;
 }
 
-void wn_texture_new(VkDevice logical_device, VkPhysicalDevice physical_device, const char *filename)
+wn_image_t wn_texture_new(const wn_device_t *device, const char *filename)
 {
     int width, height, channels;
     uint8_t *image_data = stbi_load(filename, &width, &height, &channels, STBI_rgb_alpha);
@@ -514,8 +632,7 @@ void wn_texture_new(VkDevice logical_device, VkPhysicalDevice physical_device, c
     VkDeviceSize size = width * height * STBI_rgb_alpha;
 
     wn_buffer_t staging = wn_buffer_new(
-        logical_device,
-        physical_device,
+        device,
         &(VkBufferCreateInfo) {
             .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
             .size = size,
@@ -529,11 +646,40 @@ void wn_texture_new(VkDevice logical_device, VkPhysicalDevice physical_device, c
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
     void *data = NULL;
-    WN_VK_CHECK(vkMapMemory(logical_device, staging.memory, 0, size, 0, &data));
+    WN_VK_CHECK(vkMapMemory(device->device, staging.memory, 0, size, 0, &data));
     memcpy(data, image_data, (size_t)size);
-    vkUnmapMemory(logical_device, staging.memory);
+    vkUnmapMemory(device->device, staging.memory);
 
     stbi_image_free(image_data);
+
+    // TODO: in actual api this would obv need to be parameterized (i.e. normal map texture format
+    // would be different) the format is also not guaranteed to be supported, so caching supported
+    // formats per gpu is probably a good idea
+    VkImageCreateInfo tex_info = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .imageType = VK_IMAGE_TYPE_2D,
+        .format = VK_FORMAT_B8G8R8A8_SRGB,
+        .extent = {
+            .width = width,
+            .height = height,
+            .depth = 1,
+        },
+        .mipLevels = 0,
+        .arrayLayers = 0,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .tiling = VK_IMAGE_TILING_OPTIMAL,
+        .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .queueFamilyIndexCount = 0,
+        .pQueueFamilyIndices = NULL,
+        .flags = 0,
+        .pNext = NULL,
+    };
+
+    wn_image_t texture = wn_image_new(device, &tex_info, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+    return texture;
 }
 
 typedef struct wn_surface_t
@@ -541,9 +687,9 @@ typedef struct wn_surface_t
     VkSurfaceKHR surface;
 
     VkSurfaceCapabilitiesKHR capabilities;
-    uint32_t nformats;
+    uint32_t n_formats;
     VkSurfaceFormatKHR *formats;
-    uint32_t npresent_modes;
+    uint32_t n_present_modes;
     VkPresentModeKHR *present_modes;
 
     VkSurfaceFormatKHR format;
@@ -567,7 +713,7 @@ typedef struct wn_frame_t
 typedef struct wn_swapchain_t
 {
     VkSwapchainKHR swapchain;
-    uint32_t nframes;
+    uint32_t n_frames;
     wn_frame_t *frames;
     VkDescriptorSetLayout desc_set_layout;
     VkDescriptorPool descriptor_pool; // FIXME: this is getting sloppy
@@ -577,14 +723,7 @@ typedef struct wn_render_t
 {
     VkInstance instance;
 
-    VkPhysicalDevice physical_device;
-    VkPhysicalDeviceProperties physical_device_props; // maybe don't need
-    VkPhysicalDeviceFeatures physical_device_features; // maybe don't need
-
-    VkDevice logical_device;
-    wn_qfi_t qfi;
-    VkQueue grapics_queue;
-    VkQueue present_queue;
+    wn_device_t device;
 
     wn_surface_t surface;
 
@@ -619,6 +758,7 @@ wn_surface_t wn_surface_new(
 {
     wn_surface_t surface = { 0 };
 
+    assert(window_surface);
     surface.surface = window_surface;
 
     // capabilities
@@ -631,42 +771,42 @@ wn_surface_t wn_surface_new(
     WN_VK_CHECK(vkGetPhysicalDeviceSurfaceFormatsKHR(
         physical_device,
         surface.surface,
-        &surface.nformats,
+        &surface.n_formats,
         NULL));
-    assert(surface.nformats > 0);
+    assert(surface.n_formats > 0);
 
-    surface.formats = (VkSurfaceFormatKHR *)malloc(surface.nformats * sizeof(VkSurfaceFormatKHR));
+    surface.formats = (VkSurfaceFormatKHR *)malloc(surface.n_formats * sizeof(VkSurfaceFormatKHR));
     assert(surface.formats);
 
     WN_VK_CHECK(vkGetPhysicalDeviceSurfaceFormatsKHR(
         physical_device,
         surface.surface,
-        &surface.nformats,
+        &surface.n_formats,
         surface.formats));
 
     // present modes
     WN_VK_CHECK(vkGetPhysicalDeviceSurfacePresentModesKHR(
         physical_device,
         surface.surface,
-        &surface.npresent_modes,
+        &surface.n_present_modes,
         NULL));
-    assert(surface.npresent_modes > 0);
+    assert(surface.n_present_modes > 0);
 
     surface.present_modes
-        = (VkPresentModeKHR *)malloc(surface.npresent_modes * sizeof(VkPresentModeKHR));
+        = (VkPresentModeKHR *)malloc(surface.n_present_modes * sizeof(VkPresentModeKHR));
     assert(surface.present_modes);
 
     WN_VK_CHECK(vkGetPhysicalDeviceSurfacePresentModesKHR(
         physical_device,
         surface.surface,
-        &surface.npresent_modes,
+        &surface.n_present_modes,
         surface.present_modes));
 
     /*
      *  choose desired format/present mode/extent
      */
     surface.format = surface.formats[0];
-    for (uint32_t i = 0; i < surface.nformats; i++)
+    for (uint32_t i = 0; i < surface.n_formats; i++)
     {
         if (surface.formats[i].format == VK_FORMAT_B8G8R8A8_SRGB
             && surface.formats[i].colorSpace == VK_COLORSPACE_SRGB_NONLINEAR_KHR)
@@ -676,7 +816,7 @@ wn_surface_t wn_surface_new(
     }
 
     surface.present_mode = VK_PRESENT_MODE_FIFO_KHR;
-    for (uint32_t i = 0; i < surface.npresent_modes; i++)
+    for (uint32_t i = 0; i < surface.n_present_modes; i++)
     {
         if (surface.present_modes[i] == VK_PRESENT_MODE_MAILBOX_KHR)
         {
@@ -717,10 +857,32 @@ void wn_surface_destroy(wn_surface_t *surface)
     free(surface->present_modes);
 }
 
+void wn_surface_setup_present_queue(const wn_surface_t *surface, wn_device_t *device)
+{
+    if (!device->present_queue)
+    {
+        VkBool32 is_supported = false;
+        vkGetPhysicalDeviceSurfaceSupportKHR(
+            device->gpu,
+            device->qfi.present,
+            surface->surface,
+            &is_supported);
+
+        if (is_supported)
+        {
+            vkGetDeviceQueue(device->device, device->qfi.present, 0, &device->present_queue);
+        }
+        else
+        {
+            log_fatal("No suitable present queue found");
+            exit(EXIT_FAILURE);
+        }
+    }
+}
+
 // TODO: maybe decouple from glfw and just pass desired width/height
 wn_swapchain_t wn_swapchain_new(
-    VkDevice logical_device,
-    VkPhysicalDevice physical_device,
+    const wn_device_t *device,
     wn_surface_t *surface,
     VkRenderPass render_pass)
 {
@@ -728,10 +890,10 @@ wn_swapchain_t wn_swapchain_new(
 
     VkSurfaceCapabilitiesKHR surface_caps = surface->capabilities;
 
-    swapchain.nframes = surface_caps.minImageCount + 1;
-    if (surface_caps.maxImageCount > 0 && swapchain.nframes > surface_caps.maxImageCount)
+    swapchain.n_frames = surface_caps.minImageCount + 1;
+    if (surface_caps.maxImageCount > 0 && swapchain.n_frames > surface_caps.maxImageCount)
     {
-        swapchain.nframes = surface_caps.maxImageCount;
+        swapchain.n_frames = surface_caps.maxImageCount;
     }
 
     /*
@@ -741,7 +903,7 @@ wn_swapchain_t wn_swapchain_new(
     VkSwapchainCreateInfoKHR swapchain_info = {
         .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
         .surface = surface->surface,
-        .minImageCount = swapchain.nframes,
+        .minImageCount = swapchain.n_frames,
         .imageFormat = surface->format.format,
         .imageColorSpace = surface->format.colorSpace,
         .imageExtent = surface->extent,
@@ -756,21 +918,21 @@ wn_swapchain_t wn_swapchain_new(
         .oldSwapchain = NULL,
     };
 
-    WN_VK_CHECK(vkCreateSwapchainKHR(logical_device, &swapchain_info, NULL, &swapchain.swapchain));
+    WN_VK_CHECK(vkCreateSwapchainKHR(device->device, &swapchain_info, NULL, &swapchain.swapchain));
 
     /*
      *  swapchain images
      */
     WN_VK_CHECK(
-        vkGetSwapchainImagesKHR(logical_device, swapchain.swapchain, &swapchain.nframes, NULL));
+        vkGetSwapchainImagesKHR(device->device, swapchain.swapchain, &swapchain.n_frames, NULL));
 
-    VkImage *images = (VkImage *)malloc(swapchain.nframes * sizeof(VkImage));
+    VkImage *images = (VkImage *)malloc(swapchain.n_frames * sizeof(VkImage));
     assert(images);
 
     WN_VK_CHECK(
-        vkGetSwapchainImagesKHR(logical_device, swapchain.swapchain, &swapchain.nframes, images));
+        vkGetSwapchainImagesKHR(device->device, swapchain.swapchain, &swapchain.n_frames, images));
 
-    swapchain.frames = (wn_frame_t *)malloc(swapchain.nframes * sizeof(wn_frame_t));
+    swapchain.frames = (wn_frame_t *)malloc(swapchain.n_frames * sizeof(wn_frame_t));
     assert(swapchain.frames);
 
     /*
@@ -793,7 +955,7 @@ wn_swapchain_t wn_swapchain_new(
     };
 
     WN_VK_CHECK(vkCreateDescriptorSetLayout(
-        logical_device,
+        device->device,
         &desc_set_layout_info,
         NULL,
         &swapchain.desc_set_layout));
@@ -803,25 +965,25 @@ wn_swapchain_t wn_swapchain_new(
      */
     VkDescriptorPoolSize desc_pool_size = {
         .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-        .descriptorCount = swapchain.nframes,
+        .descriptorCount = swapchain.n_frames,
     };
 
     VkDescriptorPoolCreateInfo desc_pool_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
         .poolSizeCount = 1,
         .pPoolSizes = &desc_pool_size,
-        .maxSets = swapchain.nframes,
+        .maxSets = swapchain.n_frames,
         .flags = 0,
         .pNext = NULL,
     };
 
     WN_VK_CHECK(
-        vkCreateDescriptorPool(logical_device, &desc_pool_info, NULL, &swapchain.descriptor_pool));
+        vkCreateDescriptorPool(device->device, &desc_pool_info, NULL, &swapchain.descriptor_pool));
 
-    VkDescriptorSetLayout *layouts = malloc(sizeof(VkDescriptorSetLayout) * swapchain.nframes);
+    VkDescriptorSetLayout *layouts = malloc(sizeof(VkDescriptorSetLayout) * swapchain.n_frames);
     assert(layouts);
 
-    for (uint32_t i = 0; i < swapchain.nframes; i++)
+    for (uint32_t i = 0; i < swapchain.n_frames; i++)
     {
         layouts[i] = swapchain.desc_set_layout;
     }
@@ -829,16 +991,16 @@ wn_swapchain_t wn_swapchain_new(
     VkDescriptorSetAllocateInfo desc_set_alloc_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
         .descriptorPool = swapchain.descriptor_pool,
-        .descriptorSetCount = swapchain.nframes,
+        .descriptorSetCount = swapchain.n_frames,
         .pSetLayouts = layouts,
         .pNext = NULL,
     };
 
-    VkDescriptorSet *desc_sets = malloc(sizeof(VkDescriptorSet) * swapchain.nframes);
+    VkDescriptorSet *desc_sets = malloc(sizeof(VkDescriptorSet) * swapchain.n_frames);
     assert(desc_sets);
-    WN_VK_CHECK(vkAllocateDescriptorSets(logical_device, &desc_set_alloc_info, desc_sets));
+    WN_VK_CHECK(vkAllocateDescriptorSets(device->device, &desc_set_alloc_info, desc_sets));
 
-    for (uint32_t i = 0; i < swapchain.nframes; i++)
+    for (uint32_t i = 0; i < swapchain.n_frames; i++)
     {
         swapchain.frames[i].image = images[i];
 
@@ -861,7 +1023,7 @@ wn_swapchain_t wn_swapchain_new(
                 .layerCount = 1,
             },
         };
-        WN_VK_CHECK(vkCreateImageView(logical_device, &info, NULL, &swapchain.frames[i].image_view))
+        WN_VK_CHECK(vkCreateImageView(device->device, &info, NULL, &swapchain.frames[i].image_view))
 
         VkFramebufferCreateInfo framebuffer_info = {
             .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
@@ -874,7 +1036,7 @@ wn_swapchain_t wn_swapchain_new(
         };
 
         WN_VK_CHECK(vkCreateFramebuffer(
-            logical_device,
+            device->device,
             &framebuffer_info,
             NULL,
             &swapchain.frames[i].framebuffer));
@@ -882,8 +1044,7 @@ wn_swapchain_t wn_swapchain_new(
         VkDeviceSize buffer_size = sizeof(wn_mvp_t);
 
         swapchain.frames[i].ubo = wn_buffer_new(
-            logical_device,
-            physical_device,
+            device,
             &(VkBufferCreateInfo) {
                 .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
                 .size = buffer_size,
@@ -919,7 +1080,7 @@ wn_swapchain_t wn_swapchain_new(
             .pNext = NULL,
         };
 
-        vkUpdateDescriptorSets(logical_device, 1, &desc_set_write, 0, NULL);
+        vkUpdateDescriptorSets(device->device, 1, &desc_set_write, 0, NULL);
     }
 
     free(layouts);
@@ -931,7 +1092,7 @@ wn_swapchain_t wn_swapchain_new(
 // TODO: destroy depth image/view
 void wn_swapchain_destroy(VkDevice device, wn_swapchain_t *swapchain)
 {
-    for (uint32_t i = 0; i < swapchain->nframes; i++)
+    for (uint32_t i = 0; i < swapchain->n_frames; i++)
     {
         vkDestroyImageView(device, swapchain->frames[i].image_view, NULL);
         vkDestroyFramebuffer(device, swapchain->frames[i].framebuffer, NULL);
@@ -1028,14 +1189,14 @@ wn_render_t wn_render_init(wn_window_t *window)
     }
 
     /*
-     *    physical device
+     * device
      */
-    uint32_t device_count = 0;
-    WN_VK_CHECK(vkEnumeratePhysicalDevices(render.instance, &device_count, NULL));
-    assert(device_count > 0);
+    uint32_t n_gpus = 0;
+    WN_VK_CHECK(vkEnumeratePhysicalDevices(render.instance, &n_gpus, NULL));
+    assert(n_gpus > 0);
 
-    VkPhysicalDevice physical_devices[device_count];
-    VkResult err = vkEnumeratePhysicalDevices(render.instance, &device_count, physical_devices);
+    VkPhysicalDevice gpus[n_gpus];
+    VkResult err = vkEnumeratePhysicalDevices(render.instance, &n_gpus, gpus);
 
     if (err)
     {
@@ -1044,9 +1205,10 @@ wn_render_t wn_render_init(wn_window_t *window)
     }
 
     // FIXME: Just picking first device rn
-    render.physical_device = physical_devices[0];
-    vkGetPhysicalDeviceProperties(render.physical_device, &render.physical_device_props);
-    vkGetPhysicalDeviceFeatures(render.physical_device, &render.physical_device_features);
+    VkPhysicalDevice gpu = gpus[0];
+
+    render.device = wn_device_new(gpu);
+    wn_device_t *device = &render.device;
 
     /*
      *    surface
@@ -1054,52 +1216,12 @@ wn_render_t wn_render_init(wn_window_t *window)
     VkSurfaceKHR window_surface = NULL;
     wn_window_create_surface(render.instance, window, &window_surface);
 
-    render.surface = wn_surface_new(window_surface, render.physical_device, window);
+    render.surface = wn_surface_new(window_surface, render.device.gpu, window);
+
+    // TODO: this could probably be moved into surface creation
+    wn_surface_setup_present_queue(&render.surface, &render.device);
 
     wn_surface_t *surface = &render.surface;
-
-    /*
-     *    logical device
-     */
-
-    // queue infos
-    render.qfi = wn_find_queue_families(render.physical_device, surface->surface);
-    float queue_prios[] = { 1.0f };
-
-    // FIXME: fix when supporting seperate graphics/present queues
-    VkDeviceQueueCreateInfo queue_info = {
-        .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-        .queueCount = 1,
-        .queueFamilyIndex = render.qfi.graphics,
-        .pQueuePriorities = queue_prios,
-    };
-
-    VkPhysicalDeviceFeatures *enabled_features = NULL;
-    const char **device_exts = NULL;
-    stbds_arrput(device_exts, VK_KHR_SWAPCHAIN_EXTENSION_NAME);
-
-    // device
-    VkDeviceCreateInfo device_info = {
-        .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-        .pQueueCreateInfos = &queue_info,
-        .queueCreateInfoCount = 1,
-        .pEnabledFeatures = enabled_features,
-        .ppEnabledExtensionNames = device_exts,
-        .enabledExtensionCount = stbds_arrlen(device_exts),
-#ifndef NDEBUG
-        .enabledLayerCount = stbds_arrlen(layers),
-        .ppEnabledLayerNames = layers,
-#else
-        .enabledLayerCount = 0,
-        .ppEnabledLayerNames = NULL,
-#endif
-    };
-
-    WN_VK_CHECK(vkCreateDevice(render.physical_device, &device_info, NULL, &render.logical_device));
-
-    // device queues
-    vkGetDeviceQueue(render.logical_device, render.qfi.graphics, 0, &render.grapics_queue);
-    vkGetDeviceQueue(render.logical_device, render.qfi.present, 0, &render.present_queue);
 
     /*
      *  render pass
@@ -1145,17 +1267,12 @@ wn_render_t wn_render_init(wn_window_t *window)
         .pDependencies = &subpass_dependency,
     };
 
-    WN_VK_CHECK(
-        vkCreateRenderPass(render.logical_device, &render_pass_info, NULL, &render.render_pass));
+    WN_VK_CHECK(vkCreateRenderPass(device->device, &render_pass_info, NULL, &render.render_pass));
 
     /*
      *    swapchain
      */
-    render.swapchain = wn_swapchain_new(
-        render.logical_device,
-        render.physical_device,
-        surface,
-        render.render_pass);
+    render.swapchain = wn_swapchain_new(device, surface, render.render_pass);
 
     wn_swapchain_t *swapchain = &render.swapchain;
 
@@ -1187,10 +1304,10 @@ wn_render_t wn_render_init(wn_window_t *window)
     };
 
     VkShaderModule vert_sm;
-    WN_VK_CHECK(vkCreateShaderModule(render.logical_device, &vert_sm_info, NULL, &vert_sm));
+    WN_VK_CHECK(vkCreateShaderModule(device->device, &vert_sm_info, NULL, &vert_sm));
 
     VkShaderModule frag_sm;
-    WN_VK_CHECK(vkCreateShaderModule(render.logical_device, &frag_sm_info, NULL, &frag_sm));
+    WN_VK_CHECK(vkCreateShaderModule(device->device, &frag_sm_info, NULL, &frag_sm));
 
     VkPipelineShaderStageCreateInfo vert_shader_stage_info = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
@@ -1305,7 +1422,7 @@ wn_render_t wn_render_init(wn_window_t *window)
     };
 
     WN_VK_CHECK(vkCreatePipelineLayout(
-        render.logical_device,
+        device->device,
         &pipeline_layout_info,
         NULL,
         &render.graphics_pipeline_layout));
@@ -1331,36 +1448,36 @@ wn_render_t wn_render_init(wn_window_t *window)
     };
 
     WN_VK_CHECK(vkCreateGraphicsPipelines(
-        render.logical_device,
+        device->device,
         NULL,
         1,
         &graphics_pipeline_info,
         NULL,
         &render.graphics_pipeline));
 
-    vkDestroyShaderModule(render.logical_device, vert_sm, NULL);
-    vkDestroyShaderModule(render.logical_device, frag_sm, NULL);
+    vkDestroyShaderModule(device->device, vert_sm, NULL);
+    vkDestroyShaderModule(device->device, frag_sm, NULL);
 
     /*
      *  command pool
      */
     VkCommandPoolCreateInfo command_pool_info = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-        .queueFamilyIndex = render.qfi.graphics,
+        .queueFamilyIndex = device->qfi.graphics,
         .flags = 0,
+        .pNext = NULL,
     };
 
     WN_VK_CHECK(
-        vkCreateCommandPool(render.logical_device, &command_pool_info, NULL, &render.command_pool));
+        vkCreateCommandPool(device->device, &command_pool_info, NULL, &render.command_pool));
 
     /*
      *  vertex buffer
      */
-    VkDeviceSize buffer_size = sizeof(vertices[0]) * NVERTICES;
+    VkDeviceSize buffer_size = sizeof(vertices[0]) * N_VERTICES;
 
     wn_buffer_t staging_buffer = wn_buffer_new(
-        render.logical_device,
-        render.physical_device,
+            device,
         &(VkBufferCreateInfo) {
             .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
             .size = buffer_size,
@@ -1374,14 +1491,12 @@ wn_render_t wn_render_init(wn_window_t *window)
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
     void *data = NULL;
-    WN_VK_CHECK(
-        vkMapMemory(render.logical_device, staging_buffer.memory, 0, buffer_size, 0, &data));
+    WN_VK_CHECK(vkMapMemory(device->device, staging_buffer.memory, 0, buffer_size, 0, &data));
     memcpy(data, vertices, (size_t)buffer_size);
-    vkUnmapMemory(render.logical_device, staging_buffer.memory);
+    vkUnmapMemory(device->device, staging_buffer.memory);
 
     render.vertex_buffer = wn_buffer_new(
-        render.logical_device,
-        render.physical_device,
+        device,
         &(VkBufferCreateInfo) {
             .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
             .size = buffer_size,
@@ -1396,7 +1511,7 @@ wn_render_t wn_render_init(wn_window_t *window)
 
     VkCommandBuffer transfer_cmd_buf = NULL;
     vkAllocateCommandBuffers(
-        render.logical_device,
+        device->device,
         &(VkCommandBufferAllocateInfo) {
             .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
             .commandPool = render.command_pool,
@@ -1420,26 +1535,25 @@ wn_render_t wn_render_init(wn_window_t *window)
     vkEndCommandBuffer(transfer_cmd_buf);
 
     vkQueueSubmit(
-        render.grapics_queue,
+        device->graphics_queue,
         1,
         &(VkSubmitInfo) { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
                           .commandBufferCount = 1,
                           .pCommandBuffers = &transfer_cmd_buf },
         NULL);
-    vkQueueWaitIdle(render.grapics_queue);
+    vkQueueWaitIdle(device->graphics_queue);
 
-    vkFreeCommandBuffers(render.logical_device, render.command_pool, 1, &transfer_cmd_buf);
+    vkFreeCommandBuffers(device->device, render.command_pool, 1, &transfer_cmd_buf);
 
-    wn_buffer_destroy(&staging_buffer, render.logical_device);
+    wn_buffer_destroy(&staging_buffer, device->device);
 
     /*
      *  index buffer
      */
-    buffer_size = sizeof(indices[0]) * NINDICES;
+    buffer_size = sizeof(indices[0]) * N_INDICES;
 
     staging_buffer = wn_buffer_new(
-        render.logical_device,
-        render.physical_device,
+        device,
         &(VkBufferCreateInfo) {
             .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
             .size = buffer_size,
@@ -1453,14 +1567,12 @@ wn_render_t wn_render_init(wn_window_t *window)
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
     data = NULL;
-    WN_VK_CHECK(
-        vkMapMemory(render.logical_device, staging_buffer.memory, 0, buffer_size, 0, &data));
+    WN_VK_CHECK(vkMapMemory(device->device, staging_buffer.memory, 0, buffer_size, 0, &data));
     memcpy(data, indices, (size_t)buffer_size);
-    vkUnmapMemory(render.logical_device, staging_buffer.memory);
+    vkUnmapMemory(device->device, staging_buffer.memory);
 
     render.index_buffer = wn_buffer_new(
-        render.logical_device,
-        render.physical_device,
+        device,
         &(VkBufferCreateInfo) {
             .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
             .size = buffer_size,
@@ -1475,7 +1587,7 @@ wn_render_t wn_render_init(wn_window_t *window)
 
     transfer_cmd_buf = NULL;
     vkAllocateCommandBuffers(
-        render.logical_device,
+        device->device,
         &(VkCommandBufferAllocateInfo) {
             .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
             .commandPool = render.command_pool,
@@ -1499,36 +1611,34 @@ wn_render_t wn_render_init(wn_window_t *window)
     vkEndCommandBuffer(transfer_cmd_buf);
 
     vkQueueSubmit(
-        render.grapics_queue,
+        device->graphics_queue,
         1,
         &(VkSubmitInfo) { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
                           .commandBufferCount = 1,
                           .pCommandBuffers = &transfer_cmd_buf },
         NULL);
-    vkQueueWaitIdle(render.grapics_queue);
+    vkQueueWaitIdle(device->graphics_queue);
 
-    vkFreeCommandBuffers(render.logical_device, render.command_pool, 1, &transfer_cmd_buf);
+    vkFreeCommandBuffers(device->device, render.command_pool, 1, &transfer_cmd_buf);
 
-    wn_buffer_destroy(&staging_buffer, render.logical_device);
+    wn_buffer_destroy(&staging_buffer, device->device);
 
     /*
      *  command buffers // TODO: Pull out for per wn_frame_t draw buffer??
      */
-    render.command_buffers = malloc(sizeof(VkCommandBuffer) * swapchain->nframes);
+    render.command_buffers = malloc(sizeof(VkCommandBuffer) * swapchain->n_frames);
     assert(render.command_buffers);
 
     VkCommandBufferAllocateInfo command_buffer_info = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
         .commandPool = render.command_pool,
-        .commandBufferCount = swapchain->nframes,
+        .commandBufferCount = swapchain->n_frames,
         .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
     };
-    WN_VK_CHECK(vkAllocateCommandBuffers(
-        render.logical_device,
-        &command_buffer_info,
-        render.command_buffers));
+    WN_VK_CHECK(
+        vkAllocateCommandBuffers(device->device, &command_buffer_info, render.command_buffers));
 
-    for (uint32_t i = 0; i < swapchain->nframes; i++)
+    for (uint32_t i = 0; i < swapchain->n_frames; i++)
     {
         VkCommandBufferBeginInfo command_buffer_begin_info = {
             .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -1584,7 +1694,7 @@ wn_render_t wn_render_init(wn_window_t *window)
             0,
             NULL);
 
-        vkCmdDrawIndexed(render.command_buffers[i], NINDICES, 1, 0, 0, 0);
+        vkCmdDrawIndexed(render.command_buffers[i], N_INDICES, 1, 0, 0, 0);
 
         vkCmdEndRenderPass(render.command_buffers[i]);
 
@@ -1611,27 +1721,21 @@ wn_render_t wn_render_init(wn_window_t *window)
     render.in_flight = (VkFence *)malloc(sizeof(VkFence) * MAX_FRAMES_IN_FLIGHT);
     assert(render.in_flight);
 
-    render.image_in_flight = (VkFence *)malloc(sizeof(VkFence) * swapchain->nframes);
+    render.image_in_flight = (VkFence *)malloc(sizeof(VkFence) * swapchain->n_frames);
     assert(render.image_in_flight);
 
-    for (uint32_t i = 0; i < swapchain->nframes; i++)
+    for (uint32_t i = 0; i < swapchain->n_frames; i++)
     {
         render.image_in_flight[i] = NULL;
     }
 
     for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
     {
-        WN_VK_CHECK(vkCreateSemaphore(
-            render.logical_device,
-            &semaphore_info,
-            NULL,
-            &render.image_available[i]));
-        WN_VK_CHECK(vkCreateSemaphore(
-            render.logical_device,
-            &semaphore_info,
-            NULL,
-            &render.render_finished[i]));
-        WN_VK_CHECK(vkCreateFence(render.logical_device, &fence_info, NULL, &render.in_flight[i]));
+        WN_VK_CHECK(
+            vkCreateSemaphore(device->device, &semaphore_info, NULL, &render.image_available[i]));
+        WN_VK_CHECK(
+            vkCreateSemaphore(device->device, &semaphore_info, NULL, &render.render_finished[i]));
+        WN_VK_CHECK(vkCreateFence(device->device, &fence_info, NULL, &render.in_flight[i]));
     }
 
     render.current_frame = 0;
@@ -1641,17 +1745,18 @@ wn_render_t wn_render_init(wn_window_t *window)
 
 void wn_swapchain_recreate(wn_render_t *render, wn_window_t *window)
 {
+    wn_device_t *device = &render->device;
     /*
      *    destroy existing swapchain and dependencies
      */
-    vkDeviceWaitIdle(render->logical_device);
-    wn_swapchain_destroy(render->logical_device, &render->swapchain);
+    vkDeviceWaitIdle(device->device);
+    wn_swapchain_destroy(device->device, &render->swapchain);
     vkFreeCommandBuffers(
-        render->logical_device,
+        device->device,
         render->command_pool,
-        render->swapchain.nframes,
+        render->swapchain.n_frames,
         render->command_buffers);
-    vkDestroyRenderPass(render->logical_device, render->render_pass, NULL);
+    vkDestroyRenderPass(device->device, render->render_pass, NULL);
 
     free(render->surface.formats);
     free(render->surface.present_modes);
@@ -1659,7 +1764,7 @@ void wn_swapchain_recreate(wn_render_t *render, wn_window_t *window)
     /*
      *    start anew...
      */
-    render->surface = wn_surface_new(render->surface.surface, render->physical_device, window);
+    render->surface = wn_surface_new(render->surface.surface, device->gpu, window);
 
     VkAttachmentDescription color_attachment = {
         .format = render->surface.format.format,
@@ -1703,26 +1808,22 @@ void wn_swapchain_recreate(wn_render_t *render, wn_window_t *window)
     };
 
     WN_VK_CHECK(
-        vkCreateRenderPass(render->logical_device, &render_pass_info, NULL, &render->render_pass));
+        vkCreateRenderPass(device->device, &render_pass_info, NULL, &render->render_pass));
 
-    render->swapchain = wn_swapchain_new(
-        render->logical_device,
-        render->physical_device,
-        &render->surface,
-        render->render_pass);
+    render->swapchain = wn_swapchain_new(device, &render->surface, render->render_pass);
 
     VkCommandBufferAllocateInfo command_buffer_info = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
         .commandPool = render->command_pool,
-        .commandBufferCount = render->swapchain.nframes,
+        .commandBufferCount = render->swapchain.n_frames,
         .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
     };
     WN_VK_CHECK(vkAllocateCommandBuffers(
-        render->logical_device,
+        device->device,
         &command_buffer_info,
         render->command_buffers));
 
-    for (uint32_t i = 0; i < render->swapchain.nframes; i++)
+    for (uint32_t i = 0; i < render->swapchain.n_frames; i++)
     {
         VkCommandBufferBeginInfo command_buffer_begin_info = {
             .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -1793,7 +1894,7 @@ void wn_swapchain_recreate(wn_render_t *render, wn_window_t *window)
             0,
             NULL);
 
-        vkCmdDrawIndexed(render->command_buffers[i], NINDICES, 1, 0, 0, 0);
+        vkCmdDrawIndexed(render->command_buffers[i], N_INDICES, 1, 0, 0, 0);
 
         vkCmdEndRenderPass(render->command_buffers[i]);
 
@@ -1803,8 +1904,10 @@ void wn_swapchain_recreate(wn_render_t *render, wn_window_t *window)
 
 void wn_draw(wn_render_t *render, wn_window_t *window)
 {
+    wn_device_t *device = &render->device;
+
     vkWaitForFences(
-        render->logical_device,
+        device->device,
         1,
         &render->in_flight[render->current_frame],
         VK_TRUE,
@@ -1812,7 +1915,7 @@ void wn_draw(wn_render_t *render, wn_window_t *window)
 
     uint32_t image_index;
     VkResult result = vkAcquireNextImageKHR(
-        render->logical_device,
+        device->device,
         render->swapchain.swapchain,
         UINT64_MAX,
         render->image_available[render->current_frame],
@@ -1846,19 +1949,19 @@ void wn_draw(wn_render_t *render, wn_window_t *window)
 
     void *data = NULL;
     WN_VK_CHECK(vkMapMemory(
-        render->logical_device,
+        device->device,
         render->swapchain.frames[image_index].ubo.memory,
         0,
         sizeof(mvp),
         0,
         &data));
     memcpy(data, &mvp, sizeof(mvp));
-    vkUnmapMemory(render->logical_device, render->swapchain.frames[image_index].ubo.memory);
+    vkUnmapMemory(device->device, render->swapchain.frames[image_index].ubo.memory);
 
     if (render->image_in_flight[image_index] != NULL)
     {
         vkWaitForFences(
-            render->logical_device,
+            device->device,
             1,
             &render->image_in_flight[image_index],
             VK_TRUE,
@@ -1879,10 +1982,10 @@ void wn_draw(wn_render_t *render, wn_window_t *window)
         .pSignalSemaphores = &render->render_finished[render->current_frame],
     };
 
-    vkResetFences(render->logical_device, 1, &render->in_flight[render->current_frame]);
+    vkResetFences(device->device, 1, &render->in_flight[render->current_frame]);
 
     WN_VK_CHECK(vkQueueSubmit(
-        render->grapics_queue,
+        device->graphics_queue,
         1,
         &submit_info,
         render->in_flight[render->current_frame]));
@@ -1897,7 +2000,7 @@ void wn_draw(wn_render_t *render, wn_window_t *window)
         .pResults = NULL,
     };
 
-    result = vkQueuePresentKHR(render->present_queue, &present_info);
+    result = vkQueuePresentKHR(device->present_queue, &present_info);
 
     if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR)
     {
@@ -1915,6 +2018,7 @@ void wn_draw(wn_render_t *render, wn_window_t *window)
 // TODO
 void wn_destroy(wn_render_t *render)
 {
+    wn_device_t *device = &render->device;
     if (render->debug_enabled)
     {
         PFN_vkDestroyDebugUtilsMessengerEXT messenger_destroyer
@@ -1930,26 +2034,26 @@ void wn_destroy(wn_render_t *render)
             log_error("Could not find PFN_vkDestroyDebugUtilsMessengerEXT adress");
         }
     }
-    wn_swapchain_destroy(render->logical_device, &render->swapchain);
+    wn_swapchain_destroy(device->device, &render->swapchain);
     for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
     {
-        vkDestroySemaphore(render->logical_device, render->image_available[i], NULL);
-        vkDestroySemaphore(render->logical_device, render->render_finished[i], NULL);
-        vkDestroyFence(render->logical_device, render->in_flight[i], NULL);
+        vkDestroySemaphore(device->device, render->image_available[i], NULL);
+        vkDestroySemaphore(device->device, render->render_finished[i], NULL);
+        vkDestroyFence(device->device, render->in_flight[i], NULL);
     }
 
-    wn_buffer_destroy(&render->vertex_buffer, render->logical_device);
-    wn_buffer_destroy(&render->index_buffer, render->logical_device);
+    wn_buffer_destroy(&render->vertex_buffer, device->device);
+    wn_buffer_destroy(&render->index_buffer, device->device);
 
     // FIXME
     wn_surface_destroy(&render->surface);
     vkDestroySurfaceKHR(render->instance, render->surface.surface, NULL);
 
-    vkDestroyPipeline(render->logical_device, render->graphics_pipeline, NULL);
-    vkDestroyPipelineLayout(render->logical_device, render->graphics_pipeline_layout, NULL);
-    vkDestroyRenderPass(render->logical_device, render->render_pass, NULL);
-    vkDestroyCommandPool(render->logical_device, render->command_pool, NULL);
-    vkDestroyDevice(render->logical_device, NULL);
+    vkDestroyPipeline(device->device, render->graphics_pipeline, NULL);
+    vkDestroyPipelineLayout(device->device, render->graphics_pipeline_layout, NULL);
+    vkDestroyRenderPass(device->device, render->render_pass, NULL);
+    vkDestroyCommandPool(device->device, render->command_pool, NULL);
+    vkDestroyDevice(device->device, NULL);
     vkDestroyInstance(render->instance, NULL);
 }
 
@@ -1971,7 +2075,7 @@ int main(void)
         wn_draw(&render, &window);
     }
 
-    vkDeviceWaitIdle(render.logical_device);
+    vkDeviceWaitIdle(render.device.device);
 
     wn_destroy(&render);
 
