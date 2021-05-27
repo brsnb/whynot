@@ -333,6 +333,59 @@ const char **wn_window_get_required_exts(uint32_t *nexts)
     return glfwGetRequiredInstanceExtensions(nexts);
 }
 
+// FIXME: very temporary convienence, single command buffer allocation + submission + full
+// vkQueueWaitIdle for the single command is incredibly inefficient
+VkCommandBuffer wn_begin_command_buffer(VkDevice device, VkCommandPool command_pool)
+{
+    VkCommandBufferAllocateInfo alloc_info = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool = command_pool,
+        .commandBufferCount = 1,
+        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .pNext = NULL,
+    };
+
+    VkCommandBuffer command_buffer = NULL;
+    WN_VK_CHECK(vkAllocateCommandBuffers(device, &alloc_info, &command_buffer));
+
+    VkCommandBufferBeginInfo begin_info = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+        .pInheritanceInfo = NULL,
+        .pNext = NULL,
+    };
+
+    WN_VK_CHECK(vkBeginCommandBuffer(command_buffer, &begin_info));
+
+    return command_buffer;
+}
+
+void wn_end_command_buffer(
+    VkDevice device,
+    VkCommandPool command_pool,
+    VkCommandBuffer command_buffer,
+    VkQueue queue)
+{
+    vkEndCommandBuffer(command_buffer);
+
+    VkSubmitInfo submit_info = {
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &command_buffer,
+        .signalSemaphoreCount = 0,
+        .pSignalSemaphores = NULL,
+        .waitSemaphoreCount = 0,
+        .pWaitSemaphores = NULL,
+        .pWaitDstStageMask = NULL,
+        .pNext = NULL,
+    };
+
+    vkQueueSubmit(queue, 1, &submit_info, NULL);
+    vkQueueWaitIdle(queue);
+
+    vkFreeCommandBuffers(device, command_pool, 1, &command_buffer);
+}
+
 // NOTE: spec allows for separate graphics and present queues, but it does not exist in any
 // implementation afaik
 typedef struct wn_qfi_t
@@ -585,6 +638,8 @@ typedef struct wn_image_t
     VkImage handle;
     VkDeviceMemory memory;
     VkDeviceSize size;
+    VkFormat format;
+    VkImageLayout layout;
 } wn_image_t;
 
 wn_image_t wn_image_new(
@@ -621,10 +676,82 @@ wn_image_t wn_image_new(
 
     WN_VK_CHECK(vkBindImageMemory(device->device, image.handle, image.memory, 0));
 
+    image.size = mem_reqs.size;
+    image.format = info->format;
+    image.layout = info->initialLayout;
+
     return image;
 }
 
-wn_image_t wn_texture_new(const wn_device_t *device, const char *filename)
+void wn_image_destroy(wn_image_t *image, VkDevice device)
+{
+    vkDestroyImage(device, image->handle, NULL);
+    vkFreeMemory(device, image->memory, NULL);
+}
+
+// FIXME: bad function but the general idea is fine, reliance on wn_begin/end_command_buffer
+void wn_transition_image_layout(
+    const wn_device_t *device,
+    VkCommandPool command_pool,
+    wn_image_t *image,
+    VkImageLayout layout)
+{
+    VkCommandBuffer cmd = wn_begin_command_buffer(device->device, command_pool);
+
+    VkImageMemoryBarrier barrier = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .image = image->handle,
+        .oldLayout = image->layout,
+        .newLayout = layout,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .subresourceRange = {
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .baseMipLevel = 0,
+            .levelCount = 1,
+            .baseArrayLayer = 0,
+            .layerCount = 1,
+        },
+        .srcAccessMask = 0,
+        .dstAccessMask = 0,
+        .pNext = NULL,
+    };
+
+    VkPipelineStageFlags source_stage = 0;
+    VkPipelineStageFlags dest_stage = 0;
+
+    if (image->layout == VK_IMAGE_LAYOUT_UNDEFINED
+        && layout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
+    {
+        barrier.srcAccessMask = 0;
+        barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        source_stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+        dest_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    }
+    else if (
+        image->layout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
+        && layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+    {
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        source_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+        dest_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    }
+    else
+    {
+        log_fatal("Unsupported layout transition");
+        exit(EXIT_FAILURE);
+    }
+
+    vkCmdPipelineBarrier(cmd, source_stage, dest_stage, 0, 0, NULL, 0, NULL, 1, &barrier);
+
+    wn_end_command_buffer(device->device, command_pool, cmd, device->graphics_queue);
+}
+
+wn_image_t wn_texture_new(
+    const wn_device_t *device,
+    VkCommandPool command_pool,
+    const char *filename)
 {
     int width, height, channels;
     uint8_t *image_data = stbi_load(filename, &width, &height, &channels, STBI_rgb_alpha);
@@ -664,11 +791,11 @@ wn_image_t wn_texture_new(const wn_device_t *device, const char *filename)
             .height = height,
             .depth = 1,
         },
-        .mipLevels = 0,
-        .arrayLayers = 0,
+        .mipLevels = 1,
+        .arrayLayers = 1,
         .samples = VK_SAMPLE_COUNT_1_BIT,
         .tiling = VK_IMAGE_TILING_OPTIMAL,
-        .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+        .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
         .queueFamilyIndexCount = 0,
@@ -678,6 +805,44 @@ wn_image_t wn_texture_new(const wn_device_t *device, const char *filename)
     };
 
     wn_image_t texture = wn_image_new(device, &tex_info, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+    wn_transition_image_layout(
+        device,
+        command_pool,
+        &texture,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+    VkCommandBuffer cmd = wn_begin_command_buffer(device->device, command_pool);
+
+    VkBufferImageCopy copy_region = {
+        .bufferOffset = 0,
+        .bufferRowLength = 0,
+        .bufferImageHeight = 0,
+        .imageSubresource = {
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .mipLevel = 0,
+            .baseArrayLayer = 0,
+            .layerCount = 1,
+        },
+        .imageOffset = {0},
+        .imageExtent = {
+            .width = width,
+            .height = height,
+            .depth = 1,
+        },
+    };
+
+    vkCmdCopyBufferToImage(
+        cmd,
+        staging.handle,
+        texture.handle,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        1,
+        &copy_region);
+
+    wn_end_command_buffer(device->device, command_pool, cmd, device->transfer_queue);
+
+    wn_buffer_destroy(&staging, device->device);
 
     return texture;
 }
@@ -743,6 +908,8 @@ typedef struct wn_render_t
     VkCommandPool command_pool;
     VkCommandBuffer *command_buffers;
 
+    wn_image_t color_texture;
+
     wn_buffer_t vertex_buffer;
     wn_buffer_t index_buffer;
 
@@ -751,10 +918,7 @@ typedef struct wn_render_t
     bool debug_enabled;
 } wn_render_t;
 
-wn_surface_t wn_surface_new(
-    VkSurfaceKHR window_surface,
-    VkPhysicalDevice physical_device,
-    wn_window_t *window)
+wn_surface_t wn_surface_new(VkSurfaceKHR window_surface, VkPhysicalDevice gpu, wn_window_t *window)
 {
     wn_surface_t surface = { 0 };
 
@@ -762,31 +926,26 @@ wn_surface_t wn_surface_new(
     surface.surface = window_surface;
 
     // capabilities
-    WN_VK_CHECK(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
-        physical_device,
-        surface.surface,
-        &surface.capabilities));
+    WN_VK_CHECK(
+        vkGetPhysicalDeviceSurfaceCapabilitiesKHR(gpu, surface.surface, &surface.capabilities));
 
     // formats
-    WN_VK_CHECK(vkGetPhysicalDeviceSurfaceFormatsKHR(
-        physical_device,
-        surface.surface,
-        &surface.n_formats,
-        NULL));
+    WN_VK_CHECK(
+        vkGetPhysicalDeviceSurfaceFormatsKHR(gpu, surface.surface, &surface.n_formats, NULL));
     assert(surface.n_formats > 0);
 
     surface.formats = (VkSurfaceFormatKHR *)malloc(surface.n_formats * sizeof(VkSurfaceFormatKHR));
     assert(surface.formats);
 
     WN_VK_CHECK(vkGetPhysicalDeviceSurfaceFormatsKHR(
-        physical_device,
+        gpu,
         surface.surface,
         &surface.n_formats,
         surface.formats));
 
     // present modes
     WN_VK_CHECK(vkGetPhysicalDeviceSurfacePresentModesKHR(
-        physical_device,
+        gpu,
         surface.surface,
         &surface.n_present_modes,
         NULL));
@@ -797,7 +956,7 @@ wn_surface_t wn_surface_new(
     assert(surface.present_modes);
 
     WN_VK_CHECK(vkGetPhysicalDeviceSurfacePresentModesKHR(
-        physical_device,
+        gpu,
         surface.surface,
         &surface.n_present_modes,
         surface.present_modes));
@@ -1472,12 +1631,17 @@ wn_render_t wn_render_init(wn_window_t *window)
         vkCreateCommandPool(device->device, &command_pool_info, NULL, &render.command_pool));
 
     /*
+     * babby's first texture
+     */
+    render.color_texture = wn_texture_new(device, render.command_pool, "../assets/textures/uv_test_1k.png");
+
+    /*
      *  vertex buffer
      */
     VkDeviceSize buffer_size = sizeof(vertices[0]) * N_VERTICES;
 
     wn_buffer_t staging_buffer = wn_buffer_new(
-            device,
+        device,
         &(VkBufferCreateInfo) {
             .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
             .size = buffer_size,
@@ -1509,21 +1673,7 @@ wn_render_t wn_render_init(wn_window_t *window)
         },
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
-    VkCommandBuffer transfer_cmd_buf = NULL;
-    vkAllocateCommandBuffers(
-        device->device,
-        &(VkCommandBufferAllocateInfo) {
-            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-            .commandPool = render.command_pool,
-            .commandBufferCount = 1,
-            .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-        },
-        &transfer_cmd_buf);
-
-    vkBeginCommandBuffer(
-        transfer_cmd_buf,
-        &(VkCommandBufferBeginInfo) { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-                                      .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT });
+    VkCommandBuffer transfer_cmd_buf = wn_begin_command_buffer(device->device, render.command_pool);
 
     vkCmdCopyBuffer(
         transfer_cmd_buf,
@@ -1532,18 +1682,11 @@ wn_render_t wn_render_init(wn_window_t *window)
         1,
         &(VkBufferCopy) { .srcOffset = 0, .dstOffset = 0, .size = buffer_size });
 
-    vkEndCommandBuffer(transfer_cmd_buf);
-
-    vkQueueSubmit(
-        device->graphics_queue,
-        1,
-        &(VkSubmitInfo) { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-                          .commandBufferCount = 1,
-                          .pCommandBuffers = &transfer_cmd_buf },
-        NULL);
-    vkQueueWaitIdle(device->graphics_queue);
-
-    vkFreeCommandBuffers(device->device, render.command_pool, 1, &transfer_cmd_buf);
+    wn_end_command_buffer(
+        device->device,
+        render.command_pool,
+        transfer_cmd_buf,
+        device->transfer_queue);
 
     wn_buffer_destroy(&staging_buffer, device->device);
 
@@ -1585,21 +1728,7 @@ wn_render_t wn_render_init(wn_window_t *window)
         },
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
-    transfer_cmd_buf = NULL;
-    vkAllocateCommandBuffers(
-        device->device,
-        &(VkCommandBufferAllocateInfo) {
-            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-            .commandPool = render.command_pool,
-            .commandBufferCount = 1,
-            .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-        },
-        &transfer_cmd_buf);
-
-    vkBeginCommandBuffer(
-        transfer_cmd_buf,
-        &(VkCommandBufferBeginInfo) { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-                                      .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT });
+    transfer_cmd_buf = wn_begin_command_buffer(device->device, render.command_pool);
 
     vkCmdCopyBuffer(
         transfer_cmd_buf,
@@ -1608,18 +1737,11 @@ wn_render_t wn_render_init(wn_window_t *window)
         1,
         &(VkBufferCopy) { .srcOffset = 0, .dstOffset = 0, .size = buffer_size });
 
-    vkEndCommandBuffer(transfer_cmd_buf);
-
-    vkQueueSubmit(
-        device->graphics_queue,
-        1,
-        &(VkSubmitInfo) { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-                          .commandBufferCount = 1,
-                          .pCommandBuffers = &transfer_cmd_buf },
-        NULL);
-    vkQueueWaitIdle(device->graphics_queue);
-
-    vkFreeCommandBuffers(device->device, render.command_pool, 1, &transfer_cmd_buf);
+    wn_end_command_buffer(
+        device->device,
+        render.command_pool,
+        transfer_cmd_buf,
+        device->transfer_queue);
 
     wn_buffer_destroy(&staging_buffer, device->device);
 
@@ -1807,8 +1929,7 @@ void wn_swapchain_recreate(wn_render_t *render, wn_window_t *window)
         .pDependencies = &subpass_dependency,
     };
 
-    WN_VK_CHECK(
-        vkCreateRenderPass(device->device, &render_pass_info, NULL, &render->render_pass));
+    WN_VK_CHECK(vkCreateRenderPass(device->device, &render_pass_info, NULL, &render->render_pass));
 
     render->swapchain = wn_swapchain_new(device, &render->surface, render->render_pass);
 
@@ -1818,10 +1939,8 @@ void wn_swapchain_recreate(wn_render_t *render, wn_window_t *window)
         .commandBufferCount = render->swapchain.n_frames,
         .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
     };
-    WN_VK_CHECK(vkAllocateCommandBuffers(
-        device->device,
-        &command_buffer_info,
-        render->command_buffers));
+    WN_VK_CHECK(
+        vkAllocateCommandBuffers(device->device, &command_buffer_info, render->command_buffers));
 
     for (uint32_t i = 0; i < render->swapchain.n_frames; i++)
     {
@@ -2041,6 +2160,8 @@ void wn_destroy(wn_render_t *render)
         vkDestroySemaphore(device->device, render->render_finished[i], NULL);
         vkDestroyFence(device->device, render->in_flight[i], NULL);
     }
+
+    wn_image_destroy(&render->color_texture, device->device);
 
     wn_buffer_destroy(&render->vertex_buffer, device->device);
     wn_buffer_destroy(&render->index_buffer, device->device);
