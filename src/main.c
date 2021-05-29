@@ -223,6 +223,7 @@ typedef struct wn_vertex_t
 {
     wn_v2f_t pos;
     wn_v3f_t color;
+    wn_v2f_t tex_coord0;
 } wn_vertex_t;
 
 VkVertexInputBindingDescription wn_vertex_get_input_binding_desc()
@@ -250,6 +251,12 @@ VkVertexInputAttributeDescription *wn_vertex_get_attribute_desc()
             .format = VK_FORMAT_R32G32B32_SFLOAT,
             .offset = offsetof(wn_vertex_t, color),
         },
+        {
+            .binding = 0,
+            .location = 2,
+            .format = VK_FORMAT_R32G32_SFLOAT,
+            .offset = offsetof(wn_vertex_t, tex_coord0),
+        },
     };
 
     return desc;
@@ -263,10 +270,10 @@ typedef struct wn_mvp_t
 } wn_mvp_t;
 
 #define N_VERTICES 4
-wn_vertex_t vertices[4] = { { { -0.5f, -0.5f }, { 1.0f, 0.0f, 0.0f } },
-                            { { 0.5f, -0.5f }, { 0.0f, 1.0f, 0.0f } },
-                            { { 0.5f, 0.5f }, { 0.0f, 0.0f, 1.0f } },
-                            { { -0.5f, 0.5f }, { 1.0f, 1.0f, 1.0f } } };
+wn_vertex_t vertices[4] = { { { -0.5f, -0.5f }, { 1.0f, 0.0f, 0.0f }, { 1.0f, 0.0f } },
+                            { { 0.5f, -0.5f }, { 0.0f, 1.0f, 0.0f }, { 0.0f, 0.0f } },
+                            { { 0.5f, 0.5f }, { 0.0f, 0.0f, 1.0f }, { 0.0f, 1.0f } },
+                            { { -0.5f, 0.5f }, { 1.0f, 1.0f, 1.0f }, { 1.0f, 1.0f } } };
 
 #define N_INDICES 6
 uint16_t indices[6] = { 0, 1, 2, 2, 3, 0 };
@@ -544,14 +551,22 @@ wn_device_t wn_device_new(VkPhysicalDevice gpu)
         queue_infos[2] = queue_info;
     }
 
-    VkPhysicalDeviceFeatures *enabled_features = NULL;
+    // FIXME: placeholder, you just have to check if feature requests are supported somehow
+    if (!device.gpu_features.samplerAnisotropy)
+    {
+        log_fatal("sampler anisotropy not supported on gpu");
+        exit(EXIT_FAILURE);
+    }
+    VkPhysicalDeviceFeatures enabled_features = {
+        .samplerAnisotropy = true,
+    };
     const char *device_exts = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
 
     VkDeviceCreateInfo device_info = {
         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
         .pQueueCreateInfos = queue_infos,
         .queueCreateInfoCount = 1,
-        .pEnabledFeatures = enabled_features,
+        .pEnabledFeatures = &enabled_features,
         .enabledExtensionCount = 1,
         .ppEnabledExtensionNames = &device_exts,
         // NOTE: this may not be compatible with < 1.2 vulkan implementation
@@ -746,13 +761,24 @@ void wn_transition_image_layout(
     vkCmdPipelineBarrier(cmd, source_stage, dest_stage, 0, 0, NULL, 0, NULL, 1, &barrier);
 
     wn_end_command_buffer(device->device, command_pool, cmd, device->graphics_queue);
+
+    image->layout = layout;
 }
 
-wn_image_t wn_texture_new(
+typedef struct wn_texture_t
+{
+    wn_image_t image;
+    VkImageView view;
+    VkSampler sampler;
+} wn_texture_t;
+
+wn_texture_t wn_texture_new(
     const wn_device_t *device,
     VkCommandPool command_pool,
     const char *filename)
 {
+    wn_texture_t texture = { 0 };
+
     int width, height, channels;
     uint8_t *image_data = stbi_load(filename, &width, &height, &channels, STBI_rgb_alpha);
 
@@ -785,7 +811,7 @@ wn_image_t wn_texture_new(
     VkImageCreateInfo tex_info = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
         .imageType = VK_IMAGE_TYPE_2D,
-        .format = VK_FORMAT_B8G8R8A8_SRGB,
+        .format = VK_FORMAT_R8G8B8A8_SRGB,
         .extent = {
             .width = width,
             .height = height,
@@ -804,12 +830,12 @@ wn_image_t wn_texture_new(
         .pNext = NULL,
     };
 
-    wn_image_t texture = wn_image_new(device, &tex_info, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    texture.image = wn_image_new(device, &tex_info, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
     wn_transition_image_layout(
         device,
         command_pool,
-        &texture,
+        &texture.image,
         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
     VkCommandBuffer cmd = wn_begin_command_buffer(device->device, command_pool);
@@ -835,7 +861,7 @@ wn_image_t wn_texture_new(
     vkCmdCopyBufferToImage(
         cmd,
         staging.handle,
-        texture.handle,
+        texture.image.handle,
         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
         1,
         &copy_region);
@@ -844,7 +870,63 @@ wn_image_t wn_texture_new(
 
     wn_buffer_destroy(&staging, device->device);
 
+    wn_transition_image_layout(
+        device,
+        command_pool,
+        &texture.image,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+    VkImageViewCreateInfo view_info = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        .image = texture.image.handle,
+        .viewType = VK_IMAGE_VIEW_TYPE_2D,
+        .format = texture.image.format,
+        .components = {
+            .r = VK_COMPONENT_SWIZZLE_R,
+            .g = VK_COMPONENT_SWIZZLE_G,
+            .b = VK_COMPONENT_SWIZZLE_B,
+            .a = VK_COMPONENT_SWIZZLE_A,
+        },
+        .subresourceRange = {
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .baseMipLevel = 0,
+            .levelCount = 1,
+            .baseArrayLayer = 0,
+            .layerCount = 1,
+        },
+    };
+
+    WN_VK_CHECK(vkCreateImageView(device->device, &view_info, NULL, &texture.view));
+
+    VkSamplerCreateInfo sampler_info = {
+        .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+        .magFilter = VK_FILTER_LINEAR,
+        .minFilter = VK_FILTER_LINEAR,
+        .addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+        .addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+        .addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+        .anisotropyEnable = true,
+        .maxAnisotropy = device->gpu_properties.limits.maxSamplerAnisotropy,
+        .borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK,
+        .unnormalizedCoordinates = false,
+        .compareEnable = false,
+        .compareOp = VK_COMPARE_OP_ALWAYS,
+        .mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR,
+        .mipLodBias = 0.0f,
+        .minLod = 0.0f,
+        .maxLod = 0.0f,
+    };
+
+    WN_VK_CHECK(vkCreateSampler(device->device, &sampler_info, NULL, &texture.sampler));
+
     return texture;
+}
+
+void wn_texture_destroy(wn_texture_t *texture, VkDevice device)
+{
+    wn_image_destroy(&texture->image, device);
+    vkDestroyImageView(device, texture->view, NULL);
+    vkDestroySampler(device, texture->sampler, NULL);
 }
 
 typedef struct wn_surface_t
@@ -908,7 +990,7 @@ typedef struct wn_render_t
     VkCommandPool command_pool;
     VkCommandBuffer *command_buffers;
 
-    wn_image_t color_texture;
+    wn_texture_t color_texture;
 
     wn_buffer_t vertex_buffer;
     wn_buffer_t index_buffer;
@@ -967,7 +1049,7 @@ wn_surface_t wn_surface_new(VkSurfaceKHR window_surface, VkPhysicalDevice gpu, w
     surface.format = surface.formats[0];
     for (uint32_t i = 0; i < surface.n_formats; i++)
     {
-        if (surface.formats[i].format == VK_FORMAT_B8G8R8A8_SRGB
+        if (surface.formats[i].format == VK_FORMAT_R8G8B8A8_SRGB
             && surface.formats[i].colorSpace == VK_COLORSPACE_SRGB_NONLINEAR_KHR)
         {
             surface.format = surface.formats[i];
@@ -1039,8 +1121,9 @@ void wn_surface_setup_present_queue(const wn_surface_t *surface, wn_device_t *de
     }
 }
 
-// TODO: maybe decouple from glfw and just pass desired width/height
+// FIXME: passing entire render state here just to access a texture for descriptor write :(
 wn_swapchain_t wn_swapchain_new(
+    const wn_render_t *render,
     const wn_device_t *device,
     wn_surface_t *surface,
     VkRenderPass render_pass)
@@ -1097,6 +1180,14 @@ wn_swapchain_t wn_swapchain_new(
     /*
      * descriptor set
      */
+    VkDescriptorSetLayoutBinding sampler_binding = {
+        .binding = 1,
+        .descriptorCount = 1,
+        .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+        .pImmutableSamplers = NULL,
+    };
+
     VkDescriptorSetLayoutBinding mvp_binding = {
         .binding = 0,
         .descriptorCount = 1,
@@ -1105,10 +1196,15 @@ wn_swapchain_t wn_swapchain_new(
         .pImmutableSamplers = NULL,
     };
 
+    VkDescriptorSetLayoutBinding desc_set_bindings[] = {
+        mvp_binding,
+        sampler_binding,
+    };
+
     VkDescriptorSetLayoutCreateInfo desc_set_layout_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-        .bindingCount = 1,
-        .pBindings = &mvp_binding,
+        .bindingCount = 2,
+        .pBindings = desc_set_bindings,
         .flags = 0,
         .pNext = NULL,
     };
@@ -1122,15 +1218,19 @@ wn_swapchain_t wn_swapchain_new(
     /*
      * descriptor pool
      */
-    VkDescriptorPoolSize desc_pool_size = {
-        .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-        .descriptorCount = swapchain.n_frames,
-    };
+    VkDescriptorPoolSize desc_pool_sizes[] = { {
+                                                   .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                                   .descriptorCount = swapchain.n_frames,
+                                               },
+                                               {
+                                                   .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                                   .descriptorCount = swapchain.n_frames,
+                                               } };
 
     VkDescriptorPoolCreateInfo desc_pool_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-        .poolSizeCount = 1,
-        .pPoolSizes = &desc_pool_size,
+        .poolSizeCount = 2,
+        .pPoolSizes = desc_pool_sizes,
         .maxSets = swapchain.n_frames,
         .flags = 0,
         .pNext = NULL,
@@ -1215,6 +1315,7 @@ wn_swapchain_t wn_swapchain_new(
                 .pNext = NULL,
             },
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
         /*
          * descriptor set
          */
@@ -1226,20 +1327,39 @@ wn_swapchain_t wn_swapchain_new(
             .range = sizeof(wn_mvp_t),
         };
 
-        VkWriteDescriptorSet desc_set_write = {
-            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .dstSet = swapchain.frames[i].ubo_desc_set,
-            .dstBinding = 0,
-            .dstArrayElement = 0,
-            .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            .descriptorCount = 1,
-            .pBufferInfo = &desc_buf_info,
-            .pImageInfo = NULL,
-            .pTexelBufferView = NULL,
-            .pNext = NULL,
+        VkDescriptorImageInfo desc_img_info = {
+            .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            .imageView = render->color_texture.view,
+            .sampler = render->color_texture.sampler,
         };
 
-        vkUpdateDescriptorSets(device->device, 1, &desc_set_write, 0, NULL);
+        VkWriteDescriptorSet desc_set_writes[]
+            = { {
+                    .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                    .dstSet = swapchain.frames[i].ubo_desc_set,
+                    .dstBinding = 0,
+                    .dstArrayElement = 0,
+                    .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                    .descriptorCount = 1,
+                    .pBufferInfo = &desc_buf_info,
+                    .pImageInfo = NULL,
+                    .pTexelBufferView = NULL,
+                    .pNext = NULL,
+                },
+                {
+                    .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                    .dstSet = swapchain.frames[i].ubo_desc_set,
+                    .dstBinding = 1,
+                    .dstArrayElement = 0,
+                    .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                    .descriptorCount = 1,
+                    .pBufferInfo = NULL,
+                    .pImageInfo = &desc_img_info,
+                    .pTexelBufferView = NULL,
+                    .pNext = NULL,
+                } };
+
+        vkUpdateDescriptorSets(device->device, 2, desc_set_writes, 0, NULL);
     }
 
     free(layouts);
@@ -1429,9 +1549,27 @@ wn_render_t wn_render_init(wn_window_t *window)
     WN_VK_CHECK(vkCreateRenderPass(device->device, &render_pass_info, NULL, &render.render_pass));
 
     /*
+     *  command pool
+     */
+    VkCommandPoolCreateInfo command_pool_info = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+        .queueFamilyIndex = device->qfi.graphics,
+        .flags = 0,
+        .pNext = NULL,
+    };
+
+    WN_VK_CHECK(
+        vkCreateCommandPool(device->device, &command_pool_info, NULL, &render.command_pool));
+
+    /*
+     * babby's first texture
+     */
+    render.color_texture
+        = wn_texture_new(device, render.command_pool, "../assets/textures/uv_test_1k.png");
+    /*
      *    swapchain
      */
-    render.swapchain = wn_swapchain_new(device, surface, render.render_pass);
+    render.swapchain = wn_swapchain_new(&render, device, surface, render.render_pass);
 
     wn_swapchain_t *swapchain = &render.swapchain;
 
@@ -1491,7 +1629,7 @@ wn_render_t wn_render_init(wn_window_t *window)
         .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
         .vertexBindingDescriptionCount = 1,
         .pVertexBindingDescriptions = &binding_desc,
-        .vertexAttributeDescriptionCount = 2,
+        .vertexAttributeDescriptionCount = 3,
         .pVertexAttributeDescriptions = attrib_desc,
     };
 
@@ -1616,24 +1754,6 @@ wn_render_t wn_render_init(wn_window_t *window)
 
     vkDestroyShaderModule(device->device, vert_sm, NULL);
     vkDestroyShaderModule(device->device, frag_sm, NULL);
-
-    /*
-     *  command pool
-     */
-    VkCommandPoolCreateInfo command_pool_info = {
-        .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-        .queueFamilyIndex = device->qfi.graphics,
-        .flags = 0,
-        .pNext = NULL,
-    };
-
-    WN_VK_CHECK(
-        vkCreateCommandPool(device->device, &command_pool_info, NULL, &render.command_pool));
-
-    /*
-     * babby's first texture
-     */
-    render.color_texture = wn_texture_new(device, render.command_pool, "../assets/textures/uv_test_1k.png");
 
     /*
      *  vertex buffer
@@ -1931,7 +2051,7 @@ void wn_swapchain_recreate(wn_render_t *render, wn_window_t *window)
 
     WN_VK_CHECK(vkCreateRenderPass(device->device, &render_pass_info, NULL, &render->render_pass));
 
-    render->swapchain = wn_swapchain_new(device, &render->surface, render->render_pass);
+    render->swapchain = wn_swapchain_new(render, device, &render->surface, render->render_pass);
 
     VkCommandBufferAllocateInfo command_buffer_info = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
@@ -2057,7 +2177,7 @@ void wn_draw(wn_render_t *render, wn_window_t *window)
     wn_v3f_t at = { 0.0f, 0.0f, 0.0f };
     wn_v3f_t up = { 0.0f, 0.0f, 1.0f };
     wn_mvp_t mvp = {
-        .model = wn_mat4f_from_rotation_z(M_PI_2),
+        .model = wn_mat4f_from_rotation_z(M_PI_4),
         .view = wn_mat4f_look_at(&eye, &at, &up),
         .proj = wn_mat4f_perspective(
             M_PI_4,
@@ -2161,7 +2281,7 @@ void wn_destroy(wn_render_t *render)
         vkDestroyFence(device->device, render->in_flight[i], NULL);
     }
 
-    wn_image_destroy(&render->color_texture, device->device);
+    wn_texture_destroy(&render->color_texture, device->device);
 
     wn_buffer_destroy(&render->vertex_buffer, device->device);
     wn_buffer_destroy(&render->index_buffer, device->device);
@@ -2186,7 +2306,7 @@ int main(void)
     log_set_level(LOG_ERROR);
 #endif
 
-    wn_window_t window = wn_window_new(640, 480, "whynot");
+    wn_window_t window = wn_window_new(800, 600, "whynot");
 
     wn_render_t render = wn_render_init(&window);
 
