@@ -221,7 +221,7 @@ wn_mat4f_t wn_mat4f_indentity()
 
 typedef struct wn_vertex_t
 {
-    wn_v2f_t pos;
+    wn_v3f_t pos;
     wn_v3f_t color;
     wn_v2f_t tex_coord0;
 } wn_vertex_t;
@@ -242,7 +242,7 @@ VkVertexInputAttributeDescription *wn_vertex_get_attribute_desc()
         {
             .binding = 0,
             .location = 0,
-            .format = VK_FORMAT_R32G32_SFLOAT,
+            .format = VK_FORMAT_R32G32B32_SFLOAT,
             .offset = offsetof(wn_vertex_t, pos),
         },
         {
@@ -269,14 +269,19 @@ typedef struct wn_mvp_t
     wn_mat4f_t proj;
 } wn_mvp_t;
 
-#define N_VERTICES 4
-wn_vertex_t vertices[4] = { { { -0.5f, -0.5f }, { 1.0f, 0.0f, 0.0f }, { 1.0f, 0.0f } },
-                            { { 0.5f, -0.5f }, { 0.0f, 1.0f, 0.0f }, { 0.0f, 0.0f } },
-                            { { 0.5f, 0.5f }, { 0.0f, 0.0f, 1.0f }, { 0.0f, 1.0f } },
-                            { { -0.5f, 0.5f }, { 1.0f, 1.0f, 1.0f }, { 1.0f, 1.0f } } };
+#define N_VERTICES 8
+wn_vertex_t vertices[] = { { { -0.5f, -0.5f, 0.0f }, { 1.0f, 0.0f, 0.0f }, { 0.0f, 0.0f } },
+                           { { 0.5f, -0.5f, 0.0f }, { 0.0f, 1.0f, 0.0f }, { 1.0f, 0.0f } },
+                           { { 0.5f, 0.5f, 0.0f }, { 0.0f, 0.0f, 1.0f }, { 1.0f, 1.0f } },
+                           { { -0.5f, 0.5f, 0.0f }, { 1.0f, 1.0f, 1.0f }, { 0.0f, 1.0f } },
 
-#define N_INDICES 6
-uint16_t indices[6] = { 0, 1, 2, 2, 3, 0 };
+                           { { -0.5f, -0.5f, -0.5f }, { 1.0f, 0.0f, 0.0f }, { 0.0f, 0.0f } },
+                           { { 0.5f, -0.5f, -0.5f }, { 0.0f, 1.0f, 0.0f }, { 1.0f, 0.0f } },
+                           { { 0.5f, 0.5f, -0.5f }, { 0.0f, 0.0f, 1.0f }, { 1.0f, 1.0f } },
+                           { { -0.5f, 0.5f, -0.5f }, { 1.0f, 1.0f, 1.0f }, { 0.0f, 1.0f } } };
+
+#define N_INDICES 12
+uint16_t indices[] = { 0, 1, 2, 2, 3, 0, 4, 5, 6, 6, 7, 4 };
 
 // try and wrap GLFW dependency...
 typedef struct wn_window_t
@@ -948,8 +953,9 @@ typedef struct wn_frame_t
 {
     VkImage image;
     VkImageView image_view;
-    // VkImage depth_image;
-    // VkImageView depth_image_view;
+    wn_image_t depth_image;
+    VkImageView
+        depth_image_view; // FIXME: texture_t has hardcoded format etc. becuase its temporary
     VkFramebuffer framebuffer;
     wn_buffer_t ubo;
     VkDescriptorSet ubo_desc_set;
@@ -1218,14 +1224,15 @@ wn_swapchain_t wn_swapchain_new(
     /*
      * descriptor pool
      */
-    VkDescriptorPoolSize desc_pool_sizes[] = { {
-                                                   .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                                                   .descriptorCount = swapchain.n_frames,
-                                               },
-                                               {
-                                                   .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                                                   .descriptorCount = swapchain.n_frames,
-                                               } };
+    VkDescriptorPoolSize desc_pool_sizes[]
+        = { {
+                .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                .descriptorCount = swapchain.n_frames,
+            },
+            {
+                .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                .descriptorCount = swapchain.n_frames,
+            } };
 
     VkDescriptorPoolCreateInfo desc_pool_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
@@ -1261,6 +1268,7 @@ wn_swapchain_t wn_swapchain_new(
 
     for (uint32_t i = 0; i < swapchain.n_frames; i++)
     {
+        // color attachment
         swapchain.frames[i].image = images[i];
 
         VkImageViewCreateInfo info = {
@@ -1282,13 +1290,68 @@ wn_swapchain_t wn_swapchain_new(
                 .layerCount = 1,
             },
         };
-        WN_VK_CHECK(vkCreateImageView(device->device, &info, NULL, &swapchain.frames[i].image_view))
+
+        WN_VK_CHECK(
+            vkCreateImageView(device->device, &info, NULL, &swapchain.frames[i].image_view));
+
+        // depth attachment
+        VkImageCreateInfo depth_info = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+            .imageType = VK_IMAGE_TYPE_2D,
+            .format = VK_FORMAT_D32_SFLOAT,
+            .extent = {
+                .width = surface->extent.width,
+                .height = surface->extent.height,
+                .depth = 1,
+            },
+            .mipLevels = 1,
+            .arrayLayers = 1,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .tiling = VK_IMAGE_TILING_OPTIMAL,
+            .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+            .queueFamilyIndexCount = 0,
+            .pQueueFamilyIndices = NULL,
+            .flags = 0,
+            .pNext = NULL,
+        };
+
+        swapchain.frames[i].depth_image
+            = wn_image_new(device, &depth_info, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+        VkImageViewCreateInfo depth_view_info = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .image = swapchain.frames[i].depth_image.handle, // FIXME: i mean just look at it
+            .viewType = VK_IMAGE_VIEW_TYPE_2D,
+            .format = swapchain.frames[i].depth_image.format,
+            .components = {
+                .r = VK_COMPONENT_SWIZZLE_IDENTITY,
+                .g = VK_COMPONENT_SWIZZLE_IDENTITY,
+                .b = VK_COMPONENT_SWIZZLE_IDENTITY,
+                .a = VK_COMPONENT_SWIZZLE_IDENTITY,
+            },
+            .subresourceRange = {
+                .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+                .baseMipLevel = 0,
+                .levelCount = 1,
+                .baseArrayLayer = 0,
+                .layerCount = 1,
+            },
+        };
+
+        WN_VK_CHECK(vkCreateImageView(
+            device->device,
+            &depth_view_info,
+            NULL,
+            &swapchain.frames[i].depth_image_view));
 
         VkFramebufferCreateInfo framebuffer_info = {
             .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
             .renderPass = render_pass,
-            .attachmentCount = 1,
-            .pAttachments = &swapchain.frames[i].image_view,
+            .attachmentCount = 2,
+            .pAttachments = (VkImageView[]) { swapchain.frames[i].image_view,
+                                              swapchain.frames[i].depth_image_view },
             .width = surface->extent.width,
             .height = surface->extent.height,
             .layers = 1,
@@ -1376,6 +1439,8 @@ void wn_swapchain_destroy(VkDevice device, wn_swapchain_t *swapchain)
         vkDestroyImageView(device, swapchain->frames[i].image_view, NULL);
         vkDestroyFramebuffer(device, swapchain->frames[i].framebuffer, NULL);
         wn_buffer_destroy(&swapchain->frames[i].ubo, device);
+        wn_image_destroy(&swapchain->frames[i].depth_image, device);
+        vkDestroyImageView(device, swapchain->frames[i].depth_image_view, NULL);
     }
     free(swapchain->frames);
     vkDestroyDescriptorSetLayout(device, swapchain->desc_set_layout, NULL);
@@ -1516,30 +1581,51 @@ wn_render_t wn_render_init(wn_window_t *window)
         .finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
     };
 
+    VkAttachmentDescription depth_attachment = {
+        .format = VK_FORMAT_D32_SFLOAT, // FIXME: would need to access depth format on individual
+                                        // frame_t inside of swapchain, too much indirection
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+        .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+    };
+
     VkAttachmentReference color_attachment_ref = {
         .attachment = 0,
         .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+    };
+
+    VkAttachmentReference depth_attachment_ref = {
+        .attachment = 1,
+        .layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
     };
 
     VkSubpassDescription subpass_desc = {
         .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
         .colorAttachmentCount = 1,
         .pColorAttachments = &color_attachment_ref,
+        .pDepthStencilAttachment = &depth_attachment_ref,
     };
 
     VkSubpassDependency subpass_dependency = {
         .srcSubpass = VK_SUBPASS_EXTERNAL,
         .dstSubpass = 0,
-        .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
+            | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
         .srcAccessMask = 0,
-        .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-        .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
+            | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+        .dstAccessMask
+        = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
     };
 
     VkRenderPassCreateInfo render_pass_info = {
         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
-        .attachmentCount = 1,
-        .pAttachments = &color_attachment,
+        .attachmentCount = 2,
+        .pAttachments = (VkAttachmentDescription[]) { color_attachment, depth_attachment },
         .subpassCount = 1,
         .pSubpasses = &subpass_desc,
         .dependencyCount = 1,
@@ -1683,7 +1769,20 @@ wn_render_t wn_render_init(wn_window_t *window)
     };
 
     // depth stencil state
-    // TODO
+    VkPipelineDepthStencilStateCreateInfo depth_stencil_state_info = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+        .depthTestEnable = true,
+        .depthWriteEnable = true,
+        .depthCompareOp = VK_COMPARE_OP_LESS,
+        .depthBoundsTestEnable = false,
+        .minDepthBounds = 0.0f,
+        .maxDepthBounds = 1.0f,
+        .stencilTestEnable = false,
+        .front = { 0 },
+        .back = { 0 },
+        .flags = 0,
+        .pNext = NULL,
+    };
 
     // color blending
     VkPipelineColorBlendAttachmentState color_blend_attachment_state = {
@@ -1734,7 +1833,7 @@ wn_render_t wn_render_init(wn_window_t *window)
         .pViewportState = &viewport_state_info,
         .pRasterizationState = &rasterization_state_info,
         .pMultisampleState = &multisample_state_info,
-        .pDepthStencilState = NULL,
+        .pDepthStencilState = &depth_stencil_state_info,
         .pColorBlendState = &color_blend_state_info,
         .pDynamicState = &dynamic_state_info,
         .layout = render.graphics_pipeline_layout,
@@ -1896,8 +1995,8 @@ wn_render_t wn_render_init(wn_window_t *window)
                 .offset = { .x = 0, .y = 0 },
                 .extent = surface->extent,
             },
-            .clearValueCount = 1,
-            .pClearValues = &(VkClearValue) { { { 0.0f, 0.0f, 0.0f, 1.0f } } },
+            .clearValueCount = 2,
+            .pClearValues = (VkClearValue[]) {  {.color = { 0.0f, 0.0f, 0.0f, 1.0f }}, {.depthStencil = {1.0f, 0.0f}}  },
         };
 
         vkCmdBeginRenderPass(
@@ -2008,6 +2107,8 @@ void wn_swapchain_recreate(wn_render_t *render, wn_window_t *window)
      */
     render->surface = wn_surface_new(render->surface.surface, device->gpu, window);
 
+    // TODO: renderpass recreation here is basically the same as in init
+
     VkAttachmentDescription color_attachment = {
         .format = render->surface.format.format,
         .samples = VK_SAMPLE_COUNT_1_BIT,
@@ -2019,30 +2120,51 @@ void wn_swapchain_recreate(wn_render_t *render, wn_window_t *window)
         .finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
     };
 
+    VkAttachmentDescription depth_attachment = {
+        .format = VK_FORMAT_D32_SFLOAT, // FIXME: would need to access depth format on individual
+                                        // frame_t inside of swapchain, too much indirection
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+    };
+
     VkAttachmentReference color_attachment_ref = {
         .attachment = 0,
         .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+    };
+
+    VkAttachmentReference depth_attachment_ref = {
+        .attachment = 1,
+        .layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
     };
 
     VkSubpassDescription subpass_desc = {
         .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
         .colorAttachmentCount = 1,
         .pColorAttachments = &color_attachment_ref,
+        .pDepthStencilAttachment = &depth_attachment_ref,
     };
 
     VkSubpassDependency subpass_dependency = {
         .srcSubpass = VK_SUBPASS_EXTERNAL,
         .dstSubpass = 0,
-        .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
+            | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
         .srcAccessMask = 0,
-        .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-        .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
+            | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+        .dstAccessMask
+        = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
     };
 
     VkRenderPassCreateInfo render_pass_info = {
         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
-        .attachmentCount = 1,
-        .pAttachments = &color_attachment,
+        .attachmentCount = 2,
+        .pAttachments = (VkAttachmentDescription[]) { color_attachment, depth_attachment },
         .subpassCount = 1,
         .pSubpasses = &subpass_desc,
         .dependencyCount = 1,
@@ -2078,8 +2200,8 @@ void wn_swapchain_recreate(wn_render_t *render, wn_window_t *window)
                 .offset = { .x = 0, .y = 0 },
                 .extent = render->surface.extent,
             },
-            .clearValueCount = 1,
-            .pClearValues = &(VkClearValue) { { { 0.0f, 0.0f, 0.0f, 1.0f } } },
+            .clearValueCount = 2,
+            .pClearValues = (VkClearValue[]) { {.color =  0.0f, 0.0f, 0.0f, 1.0f }, {.depthStencil = {1.0f, 0.0f}}  },
         };
 
         vkCmdBeginRenderPass(

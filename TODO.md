@@ -11,3 +11,4 @@
 
 # etc
   * all queues are created from same idx, so i.e. on a device that offers more than one queue per queue family it may not be as effecient, it may also be more effecient (look into it)
+  * swapchain image size vs surface extent?
