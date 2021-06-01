@@ -9,11 +9,14 @@ whynot::render::util.h: rederer utilities
 #pragma once
 
 #include "log.h"
-#include <assert.h>
+
 #include <shaderc/shaderc.h>
+#include <vulkan/vulkan.h>
+
+#include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <vulkan/vulkan.h>
+#include <string.h>
 
 extern inline uint32_t wn_u32_max(uint32_t a, uint32_t b)
 {
@@ -41,10 +44,13 @@ extern inline uint32_t wn_u32_min(uint32_t a, uint32_t b)
 VKAPI_ATTR VkBool32 VKAPI_CALL wn_util_debug_message_callback(
     VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
     VkDebugUtilsMessageTypeFlagsEXT messageType,
-    const VkDebugUtilsMessengerCallbackDataEXT *pCallbackData,
-    void *pUserData)
+    const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
+    void* pUserData)
 {
-    char *message_type = "";
+    if (pUserData != NULL)
+    {
+    }
+    char* message_type = "";
     if (messageType & VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT)
     {
         message_type = "GENERAL";
@@ -58,9 +64,9 @@ VKAPI_ATTR VkBool32 VKAPI_CALL wn_util_debug_message_callback(
         message_type = "PERFORMANCE";
     }
 
-    const char *message_id_name
+    const char* message_id_name
         = pCallbackData->pMessageIdName ? pCallbackData->pMessageIdName : "";
-    const char *message = pCallbackData->pMessage ? pCallbackData->pMessage : "";
+    const char* message = pCallbackData->pMessage ? pCallbackData->pMessage : "";
 
     if (messageSeverity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT)
     {
@@ -92,7 +98,7 @@ VKAPI_ATTR VkBool32 VKAPI_CALL wn_util_debug_message_callback(
     return VK_FALSE;
 }
 
-char *wn_vk_result_to_string(VkResult result)
+char* wn_vk_result_to_string(VkResult result)
 {
     switch (result)
     {
@@ -158,33 +164,32 @@ wn_shader_loader_t wn_util_create_shader_loader()
     return loader;
 }
 
-void wn_util_destroy_shader_loader(wn_shader_loader_t *loader)
+void wn_util_destroy_shader_loader(wn_shader_loader_t* loader)
 {
     shaderc_compiler_release(loader->compiler);
 }
 
 typedef struct wn_file_source_t
 {
-    char *file_name;
-    char *content;
+    char* content;
     size_t size;
 } wn_file_source_t;
 
 typedef struct wn_shader_t
 {
     wn_file_source_t source;
-    uint32_t *spirv;
-    char *entry;
+    uint32_t* spirv;
+    char* entry;
     size_t size;
     VkShaderStageFlags shader_stage;
 } wn_shader_t;
 
 // NOTE: Inefficient but w/e really
-wn_file_source_t wn_util_read_file(const char *file_name)
+wn_file_source_t wn_util_read_file(const char* file_name)
 {
-    FILE *file = fopen(file_name, "rb");
-    char *buffer = NULL;
-    wn_file_source_t ret;
+    FILE* file = fopen(file_name, "rb");
+    char* buffer = NULL;
+    wn_file_source_t ret = { 0 };
     if (file)
     {
         fseek(file, 0, SEEK_END);
@@ -201,7 +206,6 @@ wn_file_source_t wn_util_read_file(const char *file_name)
             exit(EXIT_FAILURE);
         }
 
-        ret.file_name = file_name;
         ret.content = buffer;
         ret.size = file_size;
 
@@ -218,8 +222,8 @@ wn_file_source_t wn_util_read_file(const char *file_name)
 
 // FIXME: none of this gets freed
 wn_shader_t wn_util_load_shader(
-    wn_shader_loader_t *loader,
-    const char *file_name,
+    wn_shader_loader_t* loader,
+    const char* file_name,
     VkShaderStageFlags shader_stage)
 {
     log_info("Loading shader: %s...", file_name);
@@ -251,7 +255,7 @@ wn_shader_t wn_util_load_shader(
         "main",
         NULL);
 
-    const char *shader_err = shaderc_result_get_error_message(result);
+    const char* shader_err = shaderc_result_get_error_message(result);
 
     if (!result)
     {
@@ -268,7 +272,7 @@ wn_shader_t wn_util_load_shader(
         .entry = "main",
         .shader_stage = shader_stage,
         .size = shaderc_result_get_length(result),
-        .spirv = (uint32_t *)shaderc_result_get_bytes(result),
+        .spirv = (uint32_t*)shaderc_result_get_bytes(result),
     };
 
     log_info("Loaded shader: %s!", file_name);

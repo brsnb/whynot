@@ -15,10 +15,14 @@ whynot::main.c
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
+#include <assimp/cimport.h>
+#include <assimp/postprocess.h>
+#include <assimp/scene.h>
 // clang-format off
 #include <vulkan/vulkan.h>
 #include <GLFW/glfw3.h>
 // clang-format on
+
 #include <assert.h>
 #include <math.h>
 #include <memory.h>
@@ -96,18 +100,18 @@ typedef union wn_mat4f_t
  *       dest coordinates are right handed y-down with z(depth) clip from 0.0(near) - 1.0(far)
  */
 
-float wn_v3f_sqr_magnitude(const wn_v3f_t *v)
+float wn_v3f_sqr_magnitude(const wn_v3f_t* v)
 {
     return ((v->x * v->x) + (v->y * v->y) + (v->z * v->z));
 }
 
-float wn_v3f_magnitude(const wn_v3f_t *v)
+float wn_v3f_magnitude(const wn_v3f_t* v)
 {
     float sqr_mag = wn_v3f_sqr_magnitude(v);
     return sqrtf(sqr_mag);
 }
 
-void wn_v3f_normalize(wn_v3f_t *v)
+void wn_v3f_normalize(wn_v3f_t* v)
 {
     float inv_mag = 1.0f / wn_v3f_magnitude(v);
     v->x *= inv_mag;
@@ -115,7 +119,7 @@ void wn_v3f_normalize(wn_v3f_t *v)
     v->z *= inv_mag;
 }
 
-wn_v3f_t wn_v3f_normalized(const wn_v3f_t *v)
+wn_v3f_t wn_v3f_normalized(const wn_v3f_t* v)
 {
     wn_v3f_t r = {
         .x = v->x,
@@ -126,12 +130,12 @@ wn_v3f_t wn_v3f_normalized(const wn_v3f_t *v)
     return r;
 }
 
-float wn_v3f_dot(const wn_v3f_t *a, const wn_v3f_t *b)
+float wn_v3f_dot(const wn_v3f_t* a, const wn_v3f_t* b)
 {
     return ((a->x * b->x) + (a->y * b->y) + (a->z * b->z));
 }
 
-wn_v3f_t wn_v3f_cross(const wn_v3f_t *a, const wn_v3f_t *b)
+wn_v3f_t wn_v3f_cross(const wn_v3f_t* a, const wn_v3f_t* b)
 {
     // clang-format off
     return (wn_v3f_t) {
@@ -142,12 +146,12 @@ wn_v3f_t wn_v3f_cross(const wn_v3f_t *a, const wn_v3f_t *b)
     // clang-format on
 }
 
-wn_v3f_t wn_v3f_minus(const wn_v3f_t *a, const wn_v3f_t *b)
+wn_v3f_t wn_v3f_minus(const wn_v3f_t* a, const wn_v3f_t* b)
 {
     return (wn_v3f_t) { .x = (a->x - b->x), .y = (a->y - b->y), .z = (a->z - b->z) };
 }
 
-wn_mat4f_t wn_mat4f_look_at(const wn_v3f_t *eye, const wn_v3f_t *at, const wn_v3f_t *up)
+wn_mat4f_t wn_mat4f_look_at(const wn_v3f_t* eye, const wn_v3f_t* at, const wn_v3f_t* up)
 {
     wn_v3f_t f = wn_v3f_minus(at, eye);
     wn_v3f_normalize(&f);
@@ -222,7 +226,6 @@ wn_mat4f_t wn_mat4f_indentity()
 typedef struct wn_vertex_t
 {
     wn_v3f_t pos;
-    wn_v3f_t color;
     wn_v2f_t tex_coord0;
 } wn_vertex_t;
 
@@ -236,7 +239,7 @@ VkVertexInputBindingDescription wn_vertex_get_input_binding_desc()
     return desc;
 }
 
-VkVertexInputAttributeDescription *wn_vertex_get_attribute_desc()
+VkVertexInputAttributeDescription* wn_vertex_get_attribute_desc()
 {
     static VkVertexInputAttributeDescription desc[] = {
         {
@@ -248,12 +251,6 @@ VkVertexInputAttributeDescription *wn_vertex_get_attribute_desc()
         {
             .binding = 0,
             .location = 1,
-            .format = VK_FORMAT_R32G32B32_SFLOAT,
-            .offset = offsetof(wn_vertex_t, color),
-        },
-        {
-            .binding = 0,
-            .location = 2,
             .format = VK_FORMAT_R32G32_SFLOAT,
             .offset = offsetof(wn_vertex_t, tex_coord0),
         },
@@ -269,27 +266,79 @@ typedef struct wn_mvp_t
     wn_mat4f_t proj;
 } wn_mvp_t;
 
-#define N_VERTICES 8
-wn_vertex_t vertices[] = { { { -0.5f, -0.5f, 0.0f }, { 1.0f, 0.0f, 0.0f }, { 0.0f, 0.0f } },
-                           { { 0.5f, -0.5f, 0.0f }, { 0.0f, 1.0f, 0.0f }, { 1.0f, 0.0f } },
-                           { { 0.5f, 0.5f, 0.0f }, { 0.0f, 0.0f, 1.0f }, { 1.0f, 1.0f } },
-                           { { -0.5f, 0.5f, 0.0f }, { 1.0f, 1.0f, 1.0f }, { 0.0f, 1.0f } },
+// TODO: a real mesh struct would probably suballocate from larger allocation, fewer malloc calls is
+// better
+typedef struct wn_mesh_t
+{
+    size_t n_vertices;
+    wn_vertex_t* vertices;
+    size_t n_indices;
+    uint32_t* indices;
+} wn_mesh_t;
 
-                           { { -0.5f, -0.5f, -0.5f }, { 1.0f, 0.0f, 0.0f }, { 0.0f, 0.0f } },
-                           { { 0.5f, -0.5f, -0.5f }, { 0.0f, 1.0f, 0.0f }, { 1.0f, 0.0f } },
-                           { { 0.5f, 0.5f, -0.5f }, { 0.0f, 0.0f, 1.0f }, { 1.0f, 1.0f } },
-                           { { -0.5f, 0.5f, -0.5f }, { 1.0f, 1.0f, 1.0f }, { 0.0f, 1.0f } } };
+wn_mesh_t wn_mesh_new(size_t n_vertices, size_t n_indices)
+{
+    wn_vertex_t* vertices = malloc(sizeof(wn_vertex_t) * n_vertices);
+    assert(vertices);
+    uint32_t* indices = malloc(sizeof(uint32_t) * n_indices);
+    assert(indices);
 
-#define N_INDICES 12
-uint16_t indices[] = { 0, 1, 2, 2, 3, 0, 4, 5, 6, 6, 7, 4 };
+    return (wn_mesh_t) { .n_vertices = n_vertices,
+                         .vertices = vertices,
+                         .n_indices = n_indices,
+                         .indices = indices };
+}
+
+void wn_mesh_destroy(wn_mesh_t* mesh)
+{
+    free(mesh->vertices);
+    free(mesh->indices);
+    mesh = NULL;
+}
+
+wn_mesh_t wn_load_obj(const char* file_name)
+{
+    const struct aiScene* scene = aiImportFile(file_name, aiProcess_Triangulate);
+    if (!scene)
+    {
+        log_fatal("could not load model");
+        exit(EXIT_FAILURE);
+    }
+
+
+    struct aiMesh* src_mesh = scene->mMeshes[0];
+
+    wn_mesh_t dst_mesh = wn_mesh_new(src_mesh->mNumVertices, src_mesh->mNumFaces * src_mesh->mFaces->mNumIndices);
+
+    log_info("NUMVERTS: %d, NUM_FACE: %d, NUM_INDICES: %d", src_mesh->mNumVertices, src_mesh->mNumFaces, src_mesh->mFaces->mNumIndices);
+
+    for (size_t i = 0; i < src_mesh->mNumFaces; i += 4)
+    {
+        dst_mesh.indices[i] = src_mesh->mFaces[i].mIndices[0];
+        dst_mesh.indices[i + 1] = src_mesh->mFaces[i].mIndices[1];
+        dst_mesh.indices[i + 2] = src_mesh->mFaces[i].mIndices[2];
+    }
+
+    for (size_t i = 0; i < src_mesh->mNumVertices; i++)
+    {
+        dst_mesh.vertices[i].pos.x = src_mesh->mVertices[i].x;
+        dst_mesh.vertices[i].pos.y = src_mesh->mVertices[i].y;
+        dst_mesh.vertices[i].pos.z = src_mesh->mVertices[i].z;
+
+
+        //dst_mesh.vertices[i].tex_coord0.u = src_mesh->mTextureCoords[i]->x;
+        //dst_mesh.vertices[i].tex_coord0.v = src_mesh->mTextureCoords[i]->y;
+    }
+    return dst_mesh;
+}
 
 // try and wrap GLFW dependency...
 typedef struct wn_window_t
 {
-    GLFWwindow *window;
+    GLFWwindow* window;
 } wn_window_t;
 
-wn_window_t wn_window_new(int width, int height, char *title)
+wn_window_t wn_window_new(int width, int height, char* title)
 {
     if (!glfwInit())
     {
@@ -298,7 +347,7 @@ wn_window_t wn_window_new(int width, int height, char *title)
     }
 
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    GLFWwindow *os_window = glfwCreateWindow(width, height, title, NULL, NULL);
+    GLFWwindow* os_window = glfwCreateWindow(width, height, title, NULL, NULL);
 
     if (!os_window)
     {
@@ -313,24 +362,24 @@ wn_window_t wn_window_new(int width, int height, char *title)
     return window;
 }
 
-void wn_window_destroy(wn_window_t *window)
+void wn_window_destroy(wn_window_t* window)
 {
     glfwDestroyWindow(window->window);
     glfwTerminate();
 }
 
-void wn_window_get_framebuffer_size(wn_window_t *window, int *width, int *height)
+void wn_window_get_framebuffer_size(wn_window_t* window, int* width, int* height)
 {
     glfwGetFramebufferSize(window->window, width, height);
 }
 
 // in the style of..., but exits on failure
-void wn_window_create_surface(VkInstance instance, wn_window_t *window, VkSurfaceKHR *surface)
+void wn_window_create_surface(VkInstance instance, wn_window_t* window, VkSurfaceKHR* surface)
 {
     WN_VK_CHECK(glfwCreateWindowSurface(instance, window->window, NULL, surface));
 }
 
-int wn_window_should_close(wn_window_t *window)
+int wn_window_should_close(wn_window_t* window)
 {
     return glfwWindowShouldClose(window->window);
 }
@@ -340,7 +389,7 @@ void wn_window_poll_events(void)
     glfwPollEvents();
 }
 
-const char **wn_window_get_required_exts(uint32_t *nexts)
+const char** wn_window_get_required_exts(uint32_t* nexts)
 {
     return glfwGetRequiredInstanceExtensions(nexts);
 }
@@ -565,7 +614,7 @@ wn_device_t wn_device_new(VkPhysicalDevice gpu)
     VkPhysicalDeviceFeatures enabled_features = {
         .samplerAnisotropy = true,
     };
-    const char *device_exts = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
+    const char* device_exts = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
 
     VkDeviceCreateInfo device_info = {
         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
@@ -592,7 +641,7 @@ wn_device_t wn_device_new(VkPhysicalDevice gpu)
     return device;
 }
 
-void wn_device_destroy(wn_device_t *device)
+void wn_device_destroy(wn_device_t* device)
 {
     vkDestroyDevice(device->device, NULL);
 }
@@ -607,8 +656,8 @@ typedef struct wn_buffer_t
 } wn_buffer_t;
 
 wn_buffer_t wn_buffer_new(
-    const wn_device_t *device,
-    VkBufferCreateInfo *info,
+    const wn_device_t* device,
+    VkBufferCreateInfo* info,
     VkMemoryPropertyFlags properties)
 {
 
@@ -647,7 +696,7 @@ wn_buffer_t wn_buffer_new(
     return buffer;
 }
 
-void wn_buffer_destroy(wn_buffer_t *buffer, VkDevice logical_device)
+void wn_buffer_destroy(wn_buffer_t* buffer, VkDevice logical_device)
 {
     vkDestroyBuffer(logical_device, buffer->handle, NULL);
     vkFreeMemory(logical_device, buffer->memory, NULL);
@@ -663,8 +712,8 @@ typedef struct wn_image_t
 } wn_image_t;
 
 wn_image_t wn_image_new(
-    const wn_device_t *device,
-    VkImageCreateInfo *info,
+    const wn_device_t* device,
+    VkImageCreateInfo* info,
     VkMemoryPropertyFlags properties)
 {
     wn_image_t image = { 0 };
@@ -703,7 +752,7 @@ wn_image_t wn_image_new(
     return image;
 }
 
-void wn_image_destroy(wn_image_t *image, VkDevice device)
+void wn_image_destroy(wn_image_t* image, VkDevice device)
 {
     vkDestroyImage(device, image->handle, NULL);
     vkFreeMemory(device, image->memory, NULL);
@@ -711,9 +760,9 @@ void wn_image_destroy(wn_image_t *image, VkDevice device)
 
 // FIXME: bad function but the general idea is fine, reliance on wn_begin/end_command_buffer
 void wn_transition_image_layout(
-    const wn_device_t *device,
+    const wn_device_t* device,
     VkCommandPool command_pool,
-    wn_image_t *image,
+    wn_image_t* image,
     VkImageLayout layout)
 {
     VkCommandBuffer cmd = wn_begin_command_buffer(device->device, command_pool);
@@ -778,14 +827,14 @@ typedef struct wn_texture_t
 } wn_texture_t;
 
 wn_texture_t wn_texture_new(
-    const wn_device_t *device,
+    const wn_device_t* device,
     VkCommandPool command_pool,
-    const char *filename)
+    const char* filename)
 {
     wn_texture_t texture = { 0 };
 
     int width, height, channels;
-    uint8_t *image_data = stbi_load(filename, &width, &height, &channels, STBI_rgb_alpha);
+    uint8_t* image_data = stbi_load(filename, &width, &height, &channels, STBI_rgb_alpha);
 
     VkDeviceSize size = width * height * STBI_rgb_alpha;
 
@@ -803,7 +852,7 @@ wn_texture_t wn_texture_new(
         },
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
-    void *data = NULL;
+    void* data = NULL;
     WN_VK_CHECK(vkMapMemory(device->device, staging.memory, 0, size, 0, &data));
     memcpy(data, image_data, (size_t)size);
     vkUnmapMemory(device->device, staging.memory);
@@ -927,7 +976,7 @@ wn_texture_t wn_texture_new(
     return texture;
 }
 
-void wn_texture_destroy(wn_texture_t *texture, VkDevice device)
+void wn_texture_destroy(wn_texture_t* texture, VkDevice device)
 {
     wn_image_destroy(&texture->image, device);
     vkDestroyImageView(device, texture->view, NULL);
@@ -940,9 +989,9 @@ typedef struct wn_surface_t
 
     VkSurfaceCapabilitiesKHR capabilities;
     uint32_t n_formats;
-    VkSurfaceFormatKHR *formats;
+    VkSurfaceFormatKHR* formats;
     uint32_t n_present_modes;
-    VkPresentModeKHR *present_modes;
+    VkPresentModeKHR* present_modes;
 
     VkSurfaceFormatKHR format;
     VkPresentModeKHR present_mode;
@@ -967,7 +1016,7 @@ typedef struct wn_swapchain_t
 {
     VkSwapchainKHR swapchain;
     uint32_t n_frames;
-    wn_frame_t *frames;
+    wn_frame_t* frames;
     VkDescriptorSetLayout desc_set_layout;
     VkDescriptorPool descriptor_pool; // FIXME: this is getting sloppy
 } wn_swapchain_t;
@@ -982,10 +1031,10 @@ typedef struct wn_render_t
 
     wn_swapchain_t swapchain;
 
-    VkSemaphore *image_available;
-    VkSemaphore *render_finished;
-    VkFence *in_flight;
-    VkFence *image_in_flight;
+    VkSemaphore* image_available;
+    VkSemaphore* render_finished;
+    VkFence* in_flight;
+    VkFence* image_in_flight;
     size_t current_frame;
 
     VkRenderPass render_pass;
@@ -994,9 +1043,11 @@ typedef struct wn_render_t
     VkPipeline graphics_pipeline;
 
     VkCommandPool command_pool;
-    VkCommandBuffer *command_buffers;
+    VkCommandBuffer* command_buffers;
 
     wn_texture_t color_texture;
+
+    wn_mesh_t mesh;
 
     wn_buffer_t vertex_buffer;
     wn_buffer_t index_buffer;
@@ -1006,7 +1057,7 @@ typedef struct wn_render_t
     bool debug_enabled;
 } wn_render_t;
 
-wn_surface_t wn_surface_new(VkSurfaceKHR window_surface, VkPhysicalDevice gpu, wn_window_t *window)
+wn_surface_t wn_surface_new(VkSurfaceKHR window_surface, VkPhysicalDevice gpu, wn_window_t* window)
 {
     wn_surface_t surface = { 0 };
 
@@ -1022,7 +1073,7 @@ wn_surface_t wn_surface_new(VkSurfaceKHR window_surface, VkPhysicalDevice gpu, w
         vkGetPhysicalDeviceSurfaceFormatsKHR(gpu, surface.surface, &surface.n_formats, NULL));
     assert(surface.n_formats > 0);
 
-    surface.formats = (VkSurfaceFormatKHR *)malloc(surface.n_formats * sizeof(VkSurfaceFormatKHR));
+    surface.formats = (VkSurfaceFormatKHR*)malloc(surface.n_formats * sizeof(VkSurfaceFormatKHR));
     assert(surface.formats);
 
     WN_VK_CHECK(vkGetPhysicalDeviceSurfaceFormatsKHR(
@@ -1040,7 +1091,7 @@ wn_surface_t wn_surface_new(VkSurfaceKHR window_surface, VkPhysicalDevice gpu, w
     assert(surface.n_present_modes > 0);
 
     surface.present_modes
-        = (VkPresentModeKHR *)malloc(surface.n_present_modes * sizeof(VkPresentModeKHR));
+        = (VkPresentModeKHR*)malloc(surface.n_present_modes * sizeof(VkPresentModeKHR));
     assert(surface.present_modes);
 
     WN_VK_CHECK(vkGetPhysicalDeviceSurfacePresentModesKHR(
@@ -1098,13 +1149,13 @@ wn_surface_t wn_surface_new(VkSurfaceKHR window_surface, VkPhysicalDevice gpu, w
     return surface;
 }
 
-void wn_surface_destroy(wn_surface_t *surface)
+void wn_surface_destroy(wn_surface_t* surface)
 {
     free(surface->formats);
     free(surface->present_modes);
 }
 
-void wn_surface_setup_present_queue(const wn_surface_t *surface, wn_device_t *device)
+void wn_surface_setup_present_queue(const wn_surface_t* surface, wn_device_t* device)
 {
     if (!device->present_queue)
     {
@@ -1129,9 +1180,9 @@ void wn_surface_setup_present_queue(const wn_surface_t *surface, wn_device_t *de
 
 // FIXME: passing entire render state here just to access a texture for descriptor write :(
 wn_swapchain_t wn_swapchain_new(
-    const wn_render_t *render,
-    const wn_device_t *device,
-    wn_surface_t *surface,
+    const wn_render_t* render,
+    const wn_device_t* device,
+    wn_surface_t* surface,
     VkRenderPass render_pass)
 {
     wn_swapchain_t swapchain = { 0 };
@@ -1174,13 +1225,13 @@ wn_swapchain_t wn_swapchain_new(
     WN_VK_CHECK(
         vkGetSwapchainImagesKHR(device->device, swapchain.swapchain, &swapchain.n_frames, NULL));
 
-    VkImage *images = (VkImage *)malloc(swapchain.n_frames * sizeof(VkImage));
+    VkImage* images = (VkImage*)malloc(swapchain.n_frames * sizeof(VkImage));
     assert(images);
 
     WN_VK_CHECK(
         vkGetSwapchainImagesKHR(device->device, swapchain.swapchain, &swapchain.n_frames, images));
 
-    swapchain.frames = (wn_frame_t *)malloc(swapchain.n_frames * sizeof(wn_frame_t));
+    swapchain.frames = (wn_frame_t*)malloc(swapchain.n_frames * sizeof(wn_frame_t));
     assert(swapchain.frames);
 
     /*
@@ -1246,7 +1297,7 @@ wn_swapchain_t wn_swapchain_new(
     WN_VK_CHECK(
         vkCreateDescriptorPool(device->device, &desc_pool_info, NULL, &swapchain.descriptor_pool));
 
-    VkDescriptorSetLayout *layouts = malloc(sizeof(VkDescriptorSetLayout) * swapchain.n_frames);
+    VkDescriptorSetLayout* layouts = malloc(sizeof(VkDescriptorSetLayout) * swapchain.n_frames);
     assert(layouts);
 
     for (uint32_t i = 0; i < swapchain.n_frames; i++)
@@ -1262,7 +1313,7 @@ wn_swapchain_t wn_swapchain_new(
         .pNext = NULL,
     };
 
-    VkDescriptorSet *desc_sets = malloc(sizeof(VkDescriptorSet) * swapchain.n_frames);
+    VkDescriptorSet* desc_sets = malloc(sizeof(VkDescriptorSet) * swapchain.n_frames);
     assert(desc_sets);
     WN_VK_CHECK(vkAllocateDescriptorSets(device->device, &desc_set_alloc_info, desc_sets));
 
@@ -1432,7 +1483,7 @@ wn_swapchain_t wn_swapchain_new(
 }
 
 // TODO: destroy depth image/view
-void wn_swapchain_destroy(VkDevice device, wn_swapchain_t *swapchain)
+void wn_swapchain_destroy(VkDevice device, wn_swapchain_t* swapchain)
 {
     for (uint32_t i = 0; i < swapchain->n_frames; i++)
     {
@@ -1448,7 +1499,7 @@ void wn_swapchain_destroy(VkDevice device, wn_swapchain_t *swapchain)
     vkDestroySwapchainKHR(device, swapchain->swapchain, NULL);
 }
 
-wn_render_t wn_render_init(wn_window_t *window)
+wn_render_t wn_render_init(wn_window_t* window)
 {
     wn_render_t render = { 0 };
 
@@ -1466,15 +1517,15 @@ wn_render_t wn_render_init(wn_window_t *window)
     };
 
     uint32_t ext_count = 0;
-    const char **glfw_exts = wn_window_get_required_exts(&ext_count);
-    const char **exts = NULL;
+    const char** glfw_exts = wn_window_get_required_exts(&ext_count);
+    const char** exts = NULL;
 
     for (uint32_t i = 0; i < ext_count; i++)
     {
         stbds_arrput(exts, glfw_exts[i]);
     }
 
-    const char **layers = NULL;
+    const char** layers = NULL;
     VkInstanceCreateInfo instance_info = {
         .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
         .pApplicationInfo = &app_info,
@@ -1552,7 +1603,7 @@ wn_render_t wn_render_init(wn_window_t *window)
     VkPhysicalDevice gpu = gpus[0];
 
     render.device = wn_device_new(gpu);
-    wn_device_t *device = &render.device;
+    wn_device_t* device = &render.device;
 
     /*
      *    surface
@@ -1565,7 +1616,7 @@ wn_render_t wn_render_init(wn_window_t *window)
     // TODO: this could probably be moved into surface creation
     wn_surface_setup_present_queue(&render.surface, &render.device);
 
-    wn_surface_t *surface = &render.surface;
+    wn_surface_t* surface = &render.surface;
 
     /*
      *  render pass
@@ -1657,7 +1708,7 @@ wn_render_t wn_render_init(wn_window_t *window)
      */
     render.swapchain = wn_swapchain_new(&render, device, surface, render.render_pass);
 
-    wn_swapchain_t *swapchain = &render.swapchain;
+    wn_swapchain_t* swapchain = &render.swapchain;
 
     /*
      *  pipeline
@@ -1710,12 +1761,12 @@ wn_render_t wn_render_init(wn_window_t *window)
 
     // vertex input
     VkVertexInputBindingDescription binding_desc = wn_vertex_get_input_binding_desc();
-    VkVertexInputAttributeDescription *attrib_desc = wn_vertex_get_attribute_desc();
+    VkVertexInputAttributeDescription* attrib_desc = wn_vertex_get_attribute_desc();
     VkPipelineVertexInputStateCreateInfo vert_input_state_info = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
         .vertexBindingDescriptionCount = 1,
         .pVertexBindingDescriptions = &binding_desc,
-        .vertexAttributeDescriptionCount = 3,
+        .vertexAttributeDescriptionCount = 2,
         .pVertexAttributeDescriptions = attrib_desc,
     };
 
@@ -1854,10 +1905,14 @@ wn_render_t wn_render_init(wn_window_t *window)
     vkDestroyShaderModule(device->device, vert_sm, NULL);
     vkDestroyShaderModule(device->device, frag_sm, NULL);
 
+    render.mesh = wn_load_obj("../assets/models/teapot.obj");
+
+    log_info("GOTHERE");
+
     /*
      *  vertex buffer
      */
-    VkDeviceSize buffer_size = sizeof(vertices[0]) * N_VERTICES;
+    VkDeviceSize buffer_size = sizeof(render.mesh.vertices[0]) * render.mesh.n_vertices;
 
     wn_buffer_t staging_buffer = wn_buffer_new(
         device,
@@ -1873,9 +1928,9 @@ wn_render_t wn_render_init(wn_window_t *window)
         },
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
-    void *data = NULL;
+    void* data = NULL;
     WN_VK_CHECK(vkMapMemory(device->device, staging_buffer.memory, 0, buffer_size, 0, &data));
-    memcpy(data, vertices, (size_t)buffer_size);
+    memcpy(data, render.mesh.vertices, (size_t)buffer_size);
     vkUnmapMemory(device->device, staging_buffer.memory);
 
     render.vertex_buffer = wn_buffer_new(
@@ -1912,7 +1967,7 @@ wn_render_t wn_render_init(wn_window_t *window)
     /*
      *  index buffer
      */
-    buffer_size = sizeof(indices[0]) * N_INDICES;
+    buffer_size = sizeof(render.mesh.indices[0]) * render.mesh.n_indices;
 
     staging_buffer = wn_buffer_new(
         device,
@@ -1930,7 +1985,7 @@ wn_render_t wn_render_init(wn_window_t *window)
 
     data = NULL;
     WN_VK_CHECK(vkMapMemory(device->device, staging_buffer.memory, 0, buffer_size, 0, &data));
-    memcpy(data, indices, (size_t)buffer_size);
+    memcpy(data, render.mesh.indices, (size_t)buffer_size);
     vkUnmapMemory(device->device, staging_buffer.memory);
 
     render.index_buffer = wn_buffer_new(
@@ -2023,7 +2078,7 @@ wn_render_t wn_render_init(wn_window_t *window)
             render.command_buffers[i],
             render.index_buffer.handle,
             0,
-            VK_INDEX_TYPE_UINT16);
+            VK_INDEX_TYPE_UINT32);
 
         vkCmdBindDescriptorSets(
             render.command_buffers[i],
@@ -2035,7 +2090,7 @@ wn_render_t wn_render_init(wn_window_t *window)
             0,
             NULL);
 
-        vkCmdDrawIndexed(render.command_buffers[i], N_INDICES, 1, 0, 0, 0);
+        vkCmdDrawIndexed(render.command_buffers[i], render.mesh.n_indices, 1, 0, 0, 0);
 
         vkCmdEndRenderPass(render.command_buffers[i]);
 
@@ -2053,16 +2108,16 @@ wn_render_t wn_render_init(wn_window_t *window)
         .flags = VK_FENCE_CREATE_SIGNALED_BIT,
     };
 
-    render.image_available = (VkSemaphore *)malloc(sizeof(VkSemaphore) * MAX_FRAMES_IN_FLIGHT);
+    render.image_available = (VkSemaphore*)malloc(sizeof(VkSemaphore) * MAX_FRAMES_IN_FLIGHT);
     assert(render.image_available);
 
-    render.render_finished = (VkSemaphore *)malloc(sizeof(VkSemaphore) * MAX_FRAMES_IN_FLIGHT);
+    render.render_finished = (VkSemaphore*)malloc(sizeof(VkSemaphore) * MAX_FRAMES_IN_FLIGHT);
     assert(render.render_finished);
 
-    render.in_flight = (VkFence *)malloc(sizeof(VkFence) * MAX_FRAMES_IN_FLIGHT);
+    render.in_flight = (VkFence*)malloc(sizeof(VkFence) * MAX_FRAMES_IN_FLIGHT);
     assert(render.in_flight);
 
-    render.image_in_flight = (VkFence *)malloc(sizeof(VkFence) * swapchain->n_frames);
+    render.image_in_flight = (VkFence*)malloc(sizeof(VkFence) * swapchain->n_frames);
     assert(render.image_in_flight);
 
     for (uint32_t i = 0; i < swapchain->n_frames; i++)
@@ -2084,9 +2139,9 @@ wn_render_t wn_render_init(wn_window_t *window)
     return render;
 }
 
-void wn_swapchain_recreate(wn_render_t *render, wn_window_t *window)
+void wn_swapchain_recreate(wn_render_t* render, wn_window_t* window)
 {
-    wn_device_t *device = &render->device;
+    wn_device_t* device = &render->device;
     /*
      *    destroy existing swapchain and dependencies
      */
@@ -2255,7 +2310,7 @@ void wn_swapchain_recreate(wn_render_t *render, wn_window_t *window)
             0,
             NULL);
 
-        vkCmdDrawIndexed(render->command_buffers[i], N_INDICES, 1, 0, 0, 0);
+        vkCmdDrawIndexed(render->command_buffers[i], render->mesh.n_indices, 1, 0, 0, 0);
 
         vkCmdEndRenderPass(render->command_buffers[i]);
 
@@ -2263,9 +2318,9 @@ void wn_swapchain_recreate(wn_render_t *render, wn_window_t *window)
     }
 }
 
-void wn_draw(wn_render_t *render, wn_window_t *window)
+void wn_draw(wn_render_t* render, wn_window_t* window)
 {
-    wn_device_t *device = &render->device;
+    wn_device_t* device = &render->device;
 
     vkWaitForFences(
         device->device,
@@ -2295,11 +2350,11 @@ void wn_draw(wn_render_t *render, wn_window_t *window)
     }
 
     // ubo
-    wn_v3f_t eye = { 2.0f, 2.0f, 2.0f };
+    wn_v3f_t eye = { 5.0f, 2.0f, 2.0f };
     wn_v3f_t at = { 0.0f, 0.0f, 0.0f };
     wn_v3f_t up = { 0.0f, 0.0f, 1.0f };
     wn_mvp_t mvp = {
-        .model = wn_mat4f_from_rotation_z(M_PI_4),
+        .model = wn_mat4f_from_rotation_z(glfwGetTime()),
         .view = wn_mat4f_look_at(&eye, &at, &up),
         .proj = wn_mat4f_perspective(
             M_PI_4,
@@ -2308,7 +2363,7 @@ void wn_draw(wn_render_t *render, wn_window_t *window)
             10.0f),
     };
 
-    void *data = NULL;
+    void* data = NULL;
     WN_VK_CHECK(vkMapMemory(
         device->device,
         render->swapchain.frames[image_index].ubo.memory,
@@ -2377,9 +2432,9 @@ void wn_draw(wn_render_t *render, wn_window_t *window)
 }
 
 // TODO
-void wn_destroy(wn_render_t *render)
+void wn_destroy(wn_render_t* render)
 {
-    wn_device_t *device = &render->device;
+    wn_device_t* device = &render->device;
     if (render->debug_enabled)
     {
         PFN_vkDestroyDebugUtilsMessengerEXT messenger_destroyer
