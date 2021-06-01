@@ -9,6 +9,7 @@ whynot::main.c
 #include "util.h"
 
 #include "log.h"
+#include <vulkan/vulkan_core.h>
 #define STB_DS_IMPLEMENTATION
 #define STBDS_NO_SHORT_NAMES
 #include "stb_ds.h"
@@ -305,12 +306,16 @@ wn_mesh_t wn_load_obj(const char* file_name)
         exit(EXIT_FAILURE);
     }
 
-
     struct aiMesh* src_mesh = scene->mMeshes[0];
 
-    wn_mesh_t dst_mesh = wn_mesh_new(src_mesh->mNumVertices, src_mesh->mNumFaces * src_mesh->mFaces->mNumIndices);
+    wn_mesh_t dst_mesh
+        = wn_mesh_new(src_mesh->mNumVertices, src_mesh->mNumFaces * src_mesh->mFaces->mNumIndices);
 
-    log_info("NUMVERTS: %d, NUM_FACE: %d, NUM_INDICES: %d", src_mesh->mNumVertices, src_mesh->mNumFaces, src_mesh->mFaces->mNumIndices);
+    log_info(
+        "NUMVERTS: %d, NUM_FACE: %d, NUM_INDICES: %d",
+        src_mesh->mNumVertices,
+        src_mesh->mNumFaces,
+        src_mesh->mFaces->mNumIndices);
 
     for (size_t i = 0; i < src_mesh->mNumFaces; i += 4)
     {
@@ -325,9 +330,8 @@ wn_mesh_t wn_load_obj(const char* file_name)
         dst_mesh.vertices[i].pos.y = src_mesh->mVertices[i].y;
         dst_mesh.vertices[i].pos.z = src_mesh->mVertices[i].z;
 
-
-        //dst_mesh.vertices[i].tex_coord0.u = src_mesh->mTextureCoords[i]->x;
-        //dst_mesh.vertices[i].tex_coord0.v = src_mesh->mTextureCoords[i]->y;
+        // dst_mesh.vertices[i].tex_coord0.u = src_mesh->mTextureCoords[i]->x;
+        // dst_mesh.vertices[i].tex_coord0.v = src_mesh->mTextureCoords[i]->y;
     }
     return dst_mesh;
 }
@@ -478,7 +482,7 @@ wn_qfi_t wn_find_queue_families(VkPhysicalDevice gpu)
     VkQueueFamilyProperties qfp[n_qf];
     vkGetPhysicalDeviceQueueFamilyProperties(gpu, &n_qf, qfp);
 
-    for (uint32_t i = 0; i < n_qf; ++i)
+    for (uint32_t i = 0; i < n_qf; i++)
     {
         VkQueueFamilyProperties props = qfp[i];
 
@@ -489,6 +493,7 @@ wn_qfi_t wn_find_queue_families(VkPhysicalDevice gpu)
         {
             if (!(qfi.supported & VK_QUEUE_GRAPHICS_BIT))
             {
+                log_info("Picking graphics queue idx: %d", i);
                 qfi.graphics = i;
                 qfi.present = i;
                 qfi.supported |= VK_QUEUE_GRAPHICS_BIT;
@@ -512,8 +517,9 @@ wn_qfi_t wn_find_queue_families(VkPhysicalDevice gpu)
                 && !(props.queueFlags & VK_QUEUE_GRAPHICS_BIT)
                 && !(props.queueFlags & VK_QUEUE_COMPUTE_BIT))
             {
-                qfi.compute = i;
-                qfi.supported |= VK_QUEUE_COMPUTE_BIT;
+                log_info("Picking transfer queue idx: %d", i);
+                qfi.transfer = i;
+                qfi.supported |= VK_QUEUE_TRANSFER_BIT;
             }
         }
     }
@@ -527,6 +533,7 @@ wn_qfi_t wn_find_queue_families(VkPhysicalDevice gpu)
     // TODO: there's probably a better way to do this
     if (!(qfi.supported & VK_QUEUE_COMPUTE_BIT))
     {
+        log_info("Picking compute queue idx: %d", qfi.graphics);
         qfi.compute = qfi.graphics;
     }
     if (!(qfi.supported & VK_QUEUE_TRANSFER_BIT))
@@ -563,6 +570,7 @@ wn_device_t wn_device_new(VkPhysicalDevice gpu)
 
     vkGetPhysicalDeviceProperties(gpu, &device.gpu_properties);
     vkGetPhysicalDeviceFeatures(gpu, &device.gpu_features);
+    vkGetPhysicalDeviceMemoryProperties(gpu, &device.gpu_memory_properties);
 
     device.qfi = wn_find_queue_families(gpu);
 
@@ -570,18 +578,15 @@ wn_device_t wn_device_new(VkPhysicalDevice gpu)
 
     // FIXME: hardcoded bad, there could be any number of acual queues based on how many are
     // available in the queue family and if it is even more efficient to do so
-    VkDeviceQueueCreateInfo queue_infos[3] = { 0 };
-    {
-        VkDeviceQueueCreateInfo queue_info = {
-            .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-            .queueCount = 1,
-            .queueFamilyIndex = device.qfi.graphics,
-            .pQueuePriorities = &default_queue_prio,
-            .flags = 0,
-            .pNext = NULL,
-        };
-        queue_infos[0] = queue_info;
-    }
+    VkDeviceQueueCreateInfo queue_infos[] = { {
+        .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+        .queueCount = 1,
+        .queueFamilyIndex = device.qfi.graphics,
+        .pQueuePriorities = &default_queue_prio,
+        .flags = 0,
+        .pNext = NULL,
+    } };
+#if 0
     {
         VkDeviceQueueCreateInfo queue_info = {
             .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
@@ -604,6 +609,7 @@ wn_device_t wn_device_new(VkPhysicalDevice gpu)
         };
         queue_infos[2] = queue_info;
     }
+#endif
 
     // FIXME: placeholder, you just have to check if feature requests are supported somehow
     if (!device.gpu_features.samplerAnisotropy)
@@ -632,10 +638,18 @@ wn_device_t wn_device_new(VkPhysicalDevice gpu)
 
     WN_VK_CHECK(vkCreateDevice(gpu, &device_info, NULL, &device.device));
 
+    log_info("Getting graphics device queue at idx: %d", device.qfi.graphics);
     vkGetDeviceQueue(device.device, device.qfi.graphics, 0, &device.graphics_queue);
+#if 0
+    log_info("Getting compute device queue at idx: %d", device.qfi.compute);
     vkGetDeviceQueue(device.device, device.qfi.compute, 0, &device.compute_queue);
+    log_info("Getting transfer device queue at idx: %d", device.qfi.transfer);
     vkGetDeviceQueue(device.device, device.qfi.transfer, 0, &device.transfer_queue);
-
+#endif
+    // FIXME: figure out queue stuff, queueIndex in above must be unique, but some devices don't
+    // have multiple unique queues for any given queueFamilyIndex
+    device.compute_queue = device.graphics_queue;
+    device.transfer_queue = device.graphics_queue;
     device.present_queue = NULL;
 
     return device;
@@ -673,13 +687,25 @@ wn_buffer_t wn_buffer_new(
     vkGetBufferMemoryRequirements(device->device, buffer.handle, &mem_reqs);
 
     uint32_t mem_idx = 0;
+    bool mem_type_found = false;
+    fflush(NULL);
     for (uint32_t i = 0; i < device->gpu_memory_properties.memoryTypeCount; i++)
     {
-        if ((mem_reqs.memoryTypeBits & (1 << i))
-            && (device->gpu_memory_properties.memoryTypes[i].propertyFlags & properties))
+        if (!mem_type_found)
         {
-            mem_idx = i;
+            if (((mem_reqs.memoryTypeBits & 1) == 1)
+                && (device->gpu_memory_properties.memoryTypes[i].propertyFlags & properties))
+            {
+                mem_idx = i;
+                mem_type_found = true;
+            }
         }
+    }
+
+    if (!mem_type_found)
+    {
+        log_fatal("No appropriate memory type could be found");
+        exit(EXIT_FAILURE);
     }
 
     VkMemoryAllocateInfo alloc_info = {
@@ -838,9 +864,7 @@ wn_texture_t wn_texture_new(
 
     VkDeviceSize size = width * height * STBI_rgb_alpha;
 
-    wn_buffer_t staging = wn_buffer_new(
-        device,
-        &(VkBufferCreateInfo) {
+        VkBufferCreateInfo bi = {
             .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
             .size = size,
             .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
@@ -849,7 +873,12 @@ wn_texture_t wn_texture_new(
             .queueFamilyIndexCount = 0,
             .pQueueFamilyIndices = NULL,
             .pNext = NULL,
-        },
+        };
+
+
+    wn_buffer_t staging = wn_buffer_new(
+        device,
+        &bi,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
     void* data = NULL;
@@ -1609,11 +1638,13 @@ wn_render_t wn_render_init(wn_window_t* window)
      *    surface
      */
     VkSurfaceKHR window_surface = NULL;
+
     wn_window_create_surface(render.instance, window, &window_surface);
 
     render.surface = wn_surface_new(window_surface, render.device.gpu, window);
 
     // TODO: this could probably be moved into surface creation
+
     wn_surface_setup_present_queue(&render.surface, &render.device);
 
     wn_surface_t* surface = &render.surface;
@@ -1701,8 +1732,10 @@ wn_render_t wn_render_init(wn_window_t* window)
     /*
      * babby's first texture
      */
+    log_fatal("BEFORE");
     render.color_texture
         = wn_texture_new(device, render.command_pool, "../assets/textures/uv_test_1k.png");
+    log_fatal("AFTER");
     /*
      *    swapchain
      */
