@@ -9,7 +9,6 @@ whynot::main.c
 #include "util.h"
 
 #include "log.h"
-#include <vulkan/vulkan_core.h>
 #define STB_DS_IMPLEMENTATION
 #define STBDS_NO_SHORT_NAMES
 #include "stb_ds.h"
@@ -23,7 +22,7 @@ whynot::main.c
 #include <vulkan/vulkan.h>
 #include <GLFW/glfw3.h>
 // clang-format on
-
+//
 #include <assert.h>
 #include <math.h>
 #include <memory.h>
@@ -152,6 +151,31 @@ wn_v3f_t wn_v3f_minus(const wn_v3f_t* a, const wn_v3f_t* b)
     return (wn_v3f_t) { .x = (a->x - b->x), .y = (a->y - b->y), .z = (a->z - b->z) };
 }
 
+void wn_mat4f_print(const wn_mat4f_t* m)
+{
+    // clang-format off
+    printf(
+        "%f, %f, %f, %f,\n"
+        "%f, %f, %f, %f,\n"
+        "%f, %f, %f, %f,\n"
+        "%f, %f, %f, %f,\n\n",
+        m->xx, m->xy, m->xz, m->xw,
+        m->yx, m->yy, m->yz, m->yw,
+        m->zx, m->zy, m->zz, m->zw,
+        m->wx, m->wy, m->wz, m->ww);
+    // clang-format on
+}
+
+wn_mat4f_t wn_mat4f_transpose(const wn_mat4f_t* m)
+{
+    return (wn_mat4f_t) { .mat4f = {
+                              { m->xx, m->yx, m->zx, m->wx },
+                              { m->xy, m->yy, m->zy, m->wy },
+                              { m->xz, m->yz, m->zz, m->wz },
+                              { m->xw, m->yw, m->zw, m->ww },
+                          } };
+}
+
 wn_mat4f_t wn_mat4f_look_at(const wn_v3f_t* eye, const wn_v3f_t* at, const wn_v3f_t* up)
 {
     wn_v3f_t f = wn_v3f_minus(at, eye);
@@ -275,6 +299,7 @@ typedef struct wn_mesh_t
     wn_vertex_t* vertices;
     size_t n_indices;
     uint32_t* indices;
+    wn_mat4f_t transform;
 } wn_mesh_t;
 
 wn_mesh_t wn_mesh_new(size_t n_vertices, size_t n_indices)
@@ -287,7 +312,8 @@ wn_mesh_t wn_mesh_new(size_t n_vertices, size_t n_indices)
     return (wn_mesh_t) { .n_vertices = n_vertices,
                          .vertices = vertices,
                          .n_indices = n_indices,
-                         .indices = indices };
+                         .indices = indices,
+                         .transform = wn_mat4f_indentity() };
 }
 
 void wn_mesh_destroy(wn_mesh_t* mesh)
@@ -299,7 +325,10 @@ void wn_mesh_destroy(wn_mesh_t* mesh)
 
 wn_mesh_t wn_load_obj(const char* file_name)
 {
-    const struct aiScene* scene = aiImportFile(file_name, aiProcess_Triangulate);
+    const struct aiScene* scene = aiImportFile(
+        file_name,
+        aiProcess_FindInvalidData | aiProcess_FindDegenerates | aiProcess_ValidateDataStructure
+            | aiProcess_Triangulate | aiProcess_OptimizeMeshes);
     if (!scene)
     {
         log_fatal("could not load model");
@@ -308,8 +337,11 @@ wn_mesh_t wn_load_obj(const char* file_name)
 
     struct aiMesh* src_mesh = scene->mMeshes[0];
 
-    wn_mesh_t dst_mesh
-        = wn_mesh_new(src_mesh->mNumVertices, src_mesh->mNumFaces * src_mesh->mFaces->mNumIndices);
+    wn_mesh_t dst_mesh = wn_mesh_new(src_mesh->mNumFaces * src_mesh->mFaces->mNumIndices, 1);
+
+    memcpy(&dst_mesh.transform, &scene->mRootNode->mTransformation, sizeof(wn_mat4f_t));
+
+    wn_mat4f_print(&dst_mesh.transform);
 
     log_info(
         "NUMVERTS: %d, NUM_FACE: %d, NUM_INDICES: %d",
@@ -317,22 +349,24 @@ wn_mesh_t wn_load_obj(const char* file_name)
         src_mesh->mNumFaces,
         src_mesh->mFaces->mNumIndices);
 
-    for (size_t i = 0; i < src_mesh->mNumFaces; i += 4)
+    int k = 0;
+    for (size_t i = 0; i < src_mesh->mNumFaces; i++)
     {
-        dst_mesh.indices[i] = src_mesh->mFaces[i].mIndices[0];
-        dst_mesh.indices[i + 1] = src_mesh->mFaces[i].mIndices[1];
-        dst_mesh.indices[i + 2] = src_mesh->mFaces[i].mIndices[2];
+        struct aiFace* face = &src_mesh->mFaces[i];
+        for (size_t j = 0; j < face->mNumIndices; j++)
+        {
+            dst_mesh.vertices[k + j].pos.x = src_mesh->mVertices[face->mIndices[j]].x;
+            dst_mesh.vertices[k + j].pos.y = src_mesh->mVertices[face->mIndices[j]].y;
+            dst_mesh.vertices[k + j].pos.z = src_mesh->mVertices[face->mIndices[j]].z;
+
+            dst_mesh.vertices[k + j].tex_coord0.u
+                = src_mesh->mTextureCoords[0][face->mIndices[j]].x;
+            dst_mesh.vertices[k + j].tex_coord0.v
+                = src_mesh->mTextureCoords[0][face->mIndices[j]].y;
+        }
+        k += 3;
     }
 
-    for (size_t i = 0; i < src_mesh->mNumVertices; i++)
-    {
-        dst_mesh.vertices[i].pos.x = src_mesh->mVertices[i].x;
-        dst_mesh.vertices[i].pos.y = src_mesh->mVertices[i].y;
-        dst_mesh.vertices[i].pos.z = src_mesh->mVertices[i].z;
-
-        // dst_mesh.vertices[i].tex_coord0.u = src_mesh->mTextureCoords[i]->x;
-        // dst_mesh.vertices[i].tex_coord0.v = src_mesh->mTextureCoords[i]->y;
-    }
     return dst_mesh;
 }
 
@@ -864,17 +898,16 @@ wn_texture_t wn_texture_new(
 
     VkDeviceSize size = width * height * STBI_rgb_alpha;
 
-        VkBufferCreateInfo bi = {
-            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-            .size = size,
-            .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .flags = 0,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices = NULL,
-            .pNext = NULL,
-        };
-
+    VkBufferCreateInfo bi = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size = size,
+        .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .flags = 0,
+        .queueFamilyIndexCount = 0,
+        .pQueueFamilyIndices = NULL,
+        .pNext = NULL,
+    };
 
     wn_buffer_t staging = wn_buffer_new(
         device,
@@ -888,9 +921,9 @@ wn_texture_t wn_texture_new(
 
     stbi_image_free(image_data);
 
-    // TODO: in actual api this would obv need to be parameterized (i.e. normal map texture format
-    // would be different) the format is also not guaranteed to be supported, so caching supported
-    // formats per gpu is probably a good idea
+    // TODO: in actual api this would obv need to be parameterized (i.e. normal map texture
+    // format would be different) the format is also not guaranteed to be supported, so caching
+    // supported formats per gpu is probably a good idea
     VkImageCreateInfo tex_info = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
         .imageType = VK_IMAGE_TYPE_2D,
@@ -1732,10 +1765,9 @@ wn_render_t wn_render_init(wn_window_t* window)
     /*
      * babby's first texture
      */
-    log_fatal("BEFORE");
     render.color_texture
         = wn_texture_new(device, render.command_pool, "../assets/textures/uv_test_1k.png");
-    log_fatal("AFTER");
+
     /*
      *    swapchain
      */
@@ -1940,8 +1972,6 @@ wn_render_t wn_render_init(wn_window_t* window)
 
     render.mesh = wn_load_obj("../assets/models/teapot.obj");
 
-    log_info("GOTHERE");
-
     /*
      *  vertex buffer
      */
@@ -2123,7 +2153,8 @@ wn_render_t wn_render_init(wn_window_t* window)
             0,
             NULL);
 
-        vkCmdDrawIndexed(render.command_buffers[i], render.mesh.n_indices, 1, 0, 0, 0);
+        vkCmdDraw(render.command_buffers[i], render.mesh.n_vertices, 1, 0, 0);
+        // vkCmdDrawIndexed(render.command_buffers[i], render.mesh.n_indices, 1, 0, 0, 0);
 
         vkCmdEndRenderPass(render.command_buffers[i]);
 
@@ -2331,7 +2362,7 @@ void wn_swapchain_recreate(wn_render_t* render, wn_window_t* window)
             render->command_buffers[i],
             render->index_buffer.handle,
             0,
-            VK_INDEX_TYPE_UINT16);
+            VK_INDEX_TYPE_UINT32);
 
         vkCmdBindDescriptorSets(
             render->command_buffers[i],
@@ -2343,7 +2374,8 @@ void wn_swapchain_recreate(wn_render_t* render, wn_window_t* window)
             0,
             NULL);
 
-        vkCmdDrawIndexed(render->command_buffers[i], render->mesh.n_indices, 1, 0, 0, 0);
+        vkCmdDraw(render->command_buffers[i], render->mesh.n_vertices, 1, 0, 0);
+        // vkCmdDrawIndexed(render->command_buffers[i], render->mesh.n_indices, 1, 0, 0, 0);
 
         vkCmdEndRenderPass(render->command_buffers[i]);
 
@@ -2386,8 +2418,11 @@ void wn_draw(wn_render_t* render, wn_window_t* window)
     wn_v3f_t eye = { 5.0f, 2.0f, 2.0f };
     wn_v3f_t at = { 0.0f, 0.0f, 0.0f };
     wn_v3f_t up = { 0.0f, 0.0f, 1.0f };
+    wn_mat4f_t m = wn_mat4f_from_rotation_z(glfwGetTime());
+    m = wn_mat4f_transpose(&m);
+
     wn_mvp_t mvp = {
-        .model = wn_mat4f_from_rotation_z(glfwGetTime()),
+        .model = m,
         .view = wn_mat4f_look_at(&eye, &at, &up),
         .proj = wn_mat4f_perspective(
             M_PI_4,
@@ -2496,6 +2531,8 @@ void wn_destroy(wn_render_t* render)
     wn_buffer_destroy(&render->vertex_buffer, device->device);
     wn_buffer_destroy(&render->index_buffer, device->device);
 
+    wn_mesh_destroy(&render->mesh);
+
     // FIXME
     wn_surface_destroy(&render->surface);
     vkDestroySurfaceKHR(render->instance, render->surface.surface, NULL);
@@ -2516,7 +2553,7 @@ int main(void)
     log_set_level(LOG_ERROR);
 #endif
 
-    wn_window_t window = wn_window_new(800, 600, "whynot");
+    wn_window_t window = wn_window_new(1280, 720, "");
 
     wn_render_t render = wn_render_init(&window);
 
