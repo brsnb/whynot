@@ -339,7 +339,7 @@ wn_mesh_t wn_load_obj(const char* file_name)
 
     wn_mesh_t dst_mesh = wn_mesh_new(src_mesh->mNumFaces * src_mesh->mFaces->mNumIndices, 1);
 
-    memcpy(&dst_mesh.transform, &scene->mRootNode->mTransformation, sizeof(wn_mat4f_t));
+    memcpy(&dst_mesh.transform, &scene->mRootNode->mChildren[0], sizeof(wn_mat4f_t));
 
     wn_mat4f_print(&dst_mesh.transform);
 
@@ -1970,7 +1970,7 @@ wn_render_t wn_render_init(wn_window_t* window)
     vkDestroyShaderModule(device->device, vert_sm, NULL);
     vkDestroyShaderModule(device->device, frag_sm, NULL);
 
-    render.mesh = wn_load_obj("../assets/models/teapot.obj");
+    render.mesh = wn_load_obj("../assets/models/viking_room.obj");
 
     /*
      *  vertex buffer
@@ -2415,7 +2415,7 @@ void wn_draw(wn_render_t* render, wn_window_t* window)
     }
 
     // ubo
-    wn_v3f_t eye = { 5.0f, 2.0f, 2.0f };
+    wn_v3f_t eye = { 6.0f, 2.0f, 2.0f };
     wn_v3f_t at = { 0.0f, 0.0f, 0.0f };
     wn_v3f_t up = { 0.0f, 0.0f, 1.0f };
     wn_mat4f_t m = wn_mat4f_from_rotation_z(glfwGetTime());

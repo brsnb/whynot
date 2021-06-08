@@ -10,7 +10,6 @@ add_executable(whynot
     external/log.c/src/log.h
     external/log.c/src/log.c
     external/stb/stb_ds.h
-    src/util.h
     src/main.c)
 
 target_compile_definitions(${NAME} PUBLIC LOG_USE_COLOR)
@@ -23,7 +22,7 @@ find_package(ASSIMP REQUIRED)
 #set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS}")
 #set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
 
-target_include_directories(${NAME} PUBLIC external/stb external/log.c/src ${ASSIMP_INCLUDE_DIRS})
+target_include_directories(${NAME} PUBLIC src/core src/render external/stb external/log.c/src ${ASSIMP_INCLUDE_DIRS})
 
 target_link_libraries(${NAME} PRIVATE ${ASSIMP_LIBRARIES} m stdc++ SPIRV glslang shaderc_combined vulkan glfw )
 

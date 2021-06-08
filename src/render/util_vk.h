@@ -1,7 +1,7 @@
 /*
 ===========================================================================
 
-whynot::render::util.h: rederer utilities
+whynot::render::util_vk.h: rederer utilities
 
 ===========================================================================
 */
@@ -17,15 +17,6 @@ whynot::render::util.h: rederer utilities
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-extern inline uint32_t wn_u32_max(uint32_t a, uint32_t b)
-{
-    return a > b ? a : b;
-}
-extern inline uint32_t wn_u32_min(uint32_t a, uint32_t b)
-{
-    return a < b ? a : b;
-}
 
 #define WN_VK_CHECK(f)                                                                             \
     {                                                                                              \
