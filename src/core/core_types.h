@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 typedef enum wn_result
@@ -8,6 +9,13 @@ typedef enum wn_result
     WN_OK,
     WN_ERR,
 } wn_result;
+
+// static string slice only
+typedef struct wn_str_t
+{
+    const char* data;
+    size_t size;
+} wn_str_t;
 
 // math types
 typedef union wn_v2f_t

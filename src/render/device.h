@@ -7,16 +7,8 @@ whynot::device.h: gpu and logical device
 */
 #pragma once
 
-#include "core_types.h"
+#include "render_types.h"
 #include "vk.h"
-
-typedef enum wn_queue_type
-{
-    WN_QUEUE_TYPE_COMPUTE,
-    WN_QUEUE_TYPE_GRAPHICS,
-    WN_QUEUE_TYPE_TRANSFER,
-    WN_QUEUE_TYPE_PRESENT,
-} wn_queue_type;
 
 typedef struct wn_queue_t
 {
