@@ -6,25 +6,36 @@ set(NAME whynot)
 
 project(${NAME} VERSION 0.0.1 LANGUAGES C)
 
-add_executable(whynot
-    external/log.c/src/log.h
-    external/log.c/src/log.c
-    external/stb/stb_ds.h
+
+set(SOURCES
+    src/render/device.c
+    src/render/shader_compile.c
     src/main.c)
+
+set(HEADERS
+    src/core/core_types.h
+    src/core/file.inl
+    src/core/math.inl
+    src/render/device.h
+    src/render/render_types.h
+    src/render/shader_compile.h
+    src/render/util_vk.inl
+    src/render/vk.h)
+
+add_executable(whynot ${HEADERS} ${SOURCES})
+
+target_include_directories(${NAME} PUBLIC src/core src/render external/stb external/log.c/src ${ASSIMP_INCLUDE_DIRS})
+
+target_link_libraries(${NAME} PRIVATE ${ASSIMP_LIBRARIES} m stdc++ SPIRV glslang shaderc_combined vulkan glfw )
+
+find_package(Vulkan REQUIRED)
+find_package(glfw3 REQUIRED)
+find_package(ASSIMP REQUIRED)
 
 target_compile_definitions(${NAME} PUBLIC LOG_USE_COLOR)
 target_compile_features(${NAME} PUBLIC c_std_11)
 target_compile_options(${NAME} PUBLIC -Wextra -Wall -Wshadow -Wno-missing-braces -Wmissing-field-initializers -fdiagnostics-color=always)
 
-find_package(Vulkan REQUIRED)
-find_package(glfw3 REQUIRED)
-find_package(ASSIMP REQUIRED)
-#set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS}")
-#set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
-
-target_include_directories(${NAME} PUBLIC src/core src/render external/stb external/log.c/src ${ASSIMP_INCLUDE_DIRS})
-
-target_link_libraries(${NAME} PRIVATE ${ASSIMP_LIBRARIES} m stdc++ SPIRV glslang shaderc_combined vulkan glfw )
 
 # Require out-of-source builds
 file(TO_CMAKE_PATH "${PROJECT_BINARY_DIR}/CMakeLists.txt" LOC_PATH)

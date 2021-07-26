@@ -17,6 +17,7 @@ typedef struct wn_shader_source_t
     size_t source_size;
     uint8_t* spirv;
     size_t spirv_size;
+    wn_shader_stage stage;
     const char* entry;
 } wn_shader_source_t;
 
@@ -28,8 +29,8 @@ wn_render_shader_compiler_o wn_render_shader_compiler_init(void);
 wn_result wn_render_shader_compiler_shutdown(wn_render_shader_compiler_o* compiler);
 
 wn_result wn_render_shader_compiler_compile(
-    wn_render_shader_compiler_o* compiler,
-    uint8_t* shader_bytes,
+    const wn_render_shader_compiler_o* compiler,
+    const char* filename,
     wn_shader_stage stage,
-    char* entry,
+    const char* entry,
     wn_shader_source_t* shader);
