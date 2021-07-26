@@ -6,11 +6,11 @@ whynot::math.inl: linear algebra + general math library
 ===========================================================================
 */
 
+#pragma once
+
 #include "core_types.h"
 
 #include <math.h>
-
-
 
 /*
  * NOTE: source coordinates are right handed y-up, +z out, +x right

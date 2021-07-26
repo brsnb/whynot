@@ -10,13 +10,7 @@ whynot::render::util_vk.h: rederer utilities
 
 #include "log.h"
 
-#include <shaderc/shaderc.h>
 #include <vulkan/vulkan.h>
-
-#include <assert.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 
 #define WN_VK_CHECK(f)                                                                             \
     {                                                                                              \
@@ -141,132 +135,22 @@ char* wn_vk_result_to_string(VkResult result)
     }
 }
 
-typedef struct wn_shader_loader_t
+VkQueueFlags wn_queue_type_to_vk(wn_queue_type type)
 {
-    shaderc_compiler_t compiler;
-} wn_shader_loader_t;
+    VkQueueFlags ret = 0;
 
-wn_shader_loader_t wn_util_create_shader_loader()
-{
-    wn_shader_loader_t loader = {
-        .compiler = shaderc_compiler_initialize(),
-    };
-
-    return loader;
-}
-
-void wn_util_destroy_shader_loader(wn_shader_loader_t* loader)
-{
-    shaderc_compiler_release(loader->compiler);
-}
-
-typedef struct wn_file_source_t
-{
-    char* content;
-    size_t size;
-} wn_file_source_t;
-
-typedef struct wn_shader_t
-{
-    wn_file_source_t source;
-    uint32_t* spirv;
-    char* entry;
-    size_t size;
-    VkShaderStageFlags shader_stage;
-} wn_shader_t;
-
-// NOTE: Inefficient but w/e really
-wn_file_source_t wn_util_read_file(const char* file_name)
-{
-    FILE* file = fopen(file_name, "rb");
-    char* buffer = NULL;
-    wn_file_source_t ret = { 0 };
-    if (file)
+    if (type & WN_QUEUE_TYPE_COMPUTE)
     {
-        fseek(file, 0, SEEK_END);
-        size_t file_size = ftell(file);
-        rewind(file);
-        buffer = malloc(sizeof(char) * file_size);
-        // FIXME
-        assert(buffer);
-        size_t read_size = fread(buffer, sizeof(char), file_size, file);
-        // FIXME
-        if (file_size != read_size)
-        {
-            log_fatal("Error reading shader file %s", file_name);
-            exit(EXIT_FAILURE);
-        }
-
-        ret.content = buffer;
-        ret.size = file_size;
-
-        fclose(file);
+        ret |= VK_QUEUE_COMPUTE_BIT;
     }
-    else
+    if (type & WN_QUEUE_TYPE_GRAPHICS)
     {
-        log_fatal("Couldn't load file");
-        exit(EXIT_FAILURE);
+        ret |= VK_QUEUE_GRAPHICS_BIT;
+    }
+    if (type & WN_QUEUE_TYPE_TRANSFER)
+    {
+        ret |= VK_QUEUE_TRANSFER_BIT;
     }
 
     return ret;
-}
-
-// FIXME: none of this gets freed
-wn_shader_t wn_util_load_shader(
-    wn_shader_loader_t* loader,
-    const char* file_name,
-    VkShaderStageFlags shader_stage)
-{
-    log_info("Loading shader: %s...", file_name);
-    wn_file_source_t content = wn_util_read_file(file_name);
-    shaderc_shader_kind kind;
-    switch (shader_stage)
-    {
-    case VK_SHADER_STAGE_COMPUTE_BIT:
-        kind = shaderc_compute_shader;
-        break;
-    case VK_SHADER_STAGE_FRAGMENT_BIT:
-        kind = shaderc_fragment_shader;
-        break;
-    case VK_SHADER_STAGE_VERTEX_BIT:
-        kind = shaderc_vertex_shader;
-        break;
-    default:
-        log_fatal("Need to specify a shader stage");
-        exit(EXIT_FAILURE);
-        break;
-    }
-
-    const shaderc_compilation_result_t result = shaderc_compile_into_spv(
-        loader->compiler,
-        content.content,
-        content.size,
-        kind,
-        file_name,
-        "main",
-        NULL);
-
-    const char* shader_err = shaderc_result_get_error_message(result);
-
-    if (!result)
-    {
-        log_error("Error compiling shader: %s.", file_name);
-        exit(EXIT_FAILURE);
-    }
-    if (shader_err[0] != '\0')
-    {
-        log_debug("Shader error in compiling %s: %s", file_name, shader_err);
-    }
-
-    wn_shader_t shader = {
-        .source = content,
-        .entry = "main",
-        .shader_stage = shader_stage,
-        .size = shaderc_result_get_length(result),
-        .spirv = (uint32_t*)shaderc_result_get_bytes(result),
-    };
-
-    log_info("Loaded shader: %s!", file_name);
-
-    return shader;
 }

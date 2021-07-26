@@ -8,6 +8,7 @@
     * command pool + device are coupled in command submission as it needs the device and queue
       * command buffer manager would need at least a ref to device
   * all Vk objects are opaque pointers, so fix those being passed for const correctness
+  * remove stdlib dependency
 
 # etc
   * all queues are created from same idx, so i.e. on a device that offers more than one queue per queue family it may not be as effecient, it may also be more effecient (look into it)

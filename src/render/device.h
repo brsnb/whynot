@@ -5,6 +5,7 @@ whynot::device.h: gpu and logical device
 
 ===========================================================================
 */
+
 #pragma once
 
 #include "render_types.h"
@@ -29,3 +30,8 @@ typedef struct wn_device_t
     VkPhysicalDeviceFeatures gpu_features;
     VkPhysicalDeviceMemoryProperties gpu_memory_properties;
 } wn_device_t;
+
+
+wn_result wn_render_device_create(VkPhysicalDevice gpu);
+
+void wn_render_device_destroy(wn_device_t* device);
