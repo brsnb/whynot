@@ -1,7 +1,7 @@
 /*
 ===========================================================================
 
-whynot::core_vk.h: core vulkan includes and defs
+whynot::render::core_vk.h: core vulkan includes and defs
 
 ===========================================================================
 */

@@ -1,7 +1,7 @@
 /*
 ===========================================================================
 
-whynot::render_types.h: misc types used in the renderer
+whynot::render::render_types.h: misc shared types used in the renderer
 
 ===========================================================================
 */

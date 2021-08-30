@@ -1,14 +1,23 @@
 /*
 ===========================================================================
 
-whynot::render.h: main render interface
+whynot::render::render.h: main render interface
 
 ===========================================================================
 */
 #pragma once
 
-#include "core_vk.h"
+#include "device.h"
+#include "vk.h"
 
+typedef struct wn_render_t
+{
+    VkInstance instance;
+
+    wn_device_t device;
+} wn_render_t;
+
+#if 0
 typedef struct wn_render_t
 {
     VkInstance instance;
@@ -44,4 +53,4 @@ typedef struct wn_render_t
     VkDebugUtilsMessengerEXT debug_messenger;
     bool debug_enabled;
 } wn_render_t;
-
+#endif

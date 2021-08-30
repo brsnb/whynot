@@ -17,6 +17,7 @@ set(HEADERS
     src/core/file.inl
     src/core/math.inl
     src/render/device.h
+    src/render/render.h
     src/render/render_types.h
     src/render/shader_compile.h
     src/render/util_vk.inl
