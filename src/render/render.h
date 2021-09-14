@@ -15,6 +15,8 @@ typedef struct wn_render_t
     VkInstance instance;
 
     wn_device_t device;
+
+    uint64_t frame_number;
 } wn_render_t;
 
 #if 0
